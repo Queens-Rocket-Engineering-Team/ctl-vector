@@ -1,230 +1,142 @@
 # VECTOR
 
-VECTOR (Vehicle Event, Control, Telemetry, and Operations Router) is the server application for QRET's propulsion ground control system. Discovers and communicates with ESP32 sensor/control devices over a custom binary TCP protocol, collects sensor data, controls valves, manages IP cameras, records a whole test as a single downloadable [session](#recording-sessions), and exposes everything through a REST API and CLI.
+VECTOR (Vehicle Event, Control, Telemetry, and Operations Router) is the central server for QRET's propulsion ground control system. It connects control nodes to [HELM](https://github.com/Queens-Rocket-Engineering-Team/ctl-helm), collects telemetry, sends control commands, and records tests with camera video and metadata.
 
-## System Architecture
-
-The server is designed to run on any linux machine as a headless hub between ESP32 devices and any number of clients.
+VECTOR runs on Linux on the pad or test-stand LAN. HELM runs at the control point and reaches it over long-range a wireless link. Nodes communicate with VECTOR using QLCP; HELM uses REST and WebSockets. Camera video reaches HELM through MediaMTX.
 
 ```mermaid
-flowchart LR
-    ESP1[ESP32<br>Sensors & Valves] -->|TCP :50000| Server
-    ESP2[ESP32<br>Sensors & Valves] -->|TCP :50000| Server
-    Cam[IP Cameras] -->|ONVIF / RTSP| Server
-
-    Server[Server<br>Jetson Nano]
-
-    subgraph Clients
-      direction TB
-      GUI[Desktop GUI]
-      Web[Web Client]
-      API[REST / WebSocket]
+flowchart TB
+    subgraph pad["Pad or test stand LAN"]
+        Nodes["Control Nodes"]
+        Vector["VECTOR<br/>This repository"]
+        Cameras["IP cameras"]
+        Media["MediaMTX"]
+        Nodes <-->|"QLCP"| Vector
+        Vector -.->|"Camera control"| Cameras
+        Cameras -->|"Video"| Media
+        Vector -.->|"Stream and recording setup"| Media
     end
-
-    Server -->|FastAPI :8000| GUI
-    Server -->|WebRTC / RTSP| Web
-    Server -->|HTTP / WS| API
-
-    Here((YOU ARE HERE)) --> Server:::youAreHere
-    classDef youAreHere stroke:red, stroke-width:6px;
-    linkStyle 5 stroke:red,stroke-width:4px
-    style Here fill:transparent,stroke:none,color:red;
+    subgraph control["Control point"]
+        Helm["HELM<br/>Operator GUI"]
+    end
+    Helm <-->|"REST / WebSocket<br/>over wireless link"| Vector
+    Media -->|"Live video<br/>over wireless link"| Helm
+    classDef focus fill:#dbeafe,stroke:#2563eb,stroke-width:3px,color:#172554;
+    class Vector focus;
 ```
 
-### Services
+## Architecture and reference
 
-| Service | Description |
-|---------|-------------|
-| **server** | Main application — device discovery (SSDP), TCP listener, FastAPI, CLI, in-process log stream |
-| **media** | [MediaMTX](https://github.com/bluenviron/mediamtx) RTSP/WebRTC relay for camera streams |
-| **gui** | View-only web GUI for engineers at the pad, served at `:8080` (static files only — issues no commands) |
+Start with [ARCHITECTURE.md](ARCHITECTURE.md) for the deployment diagram, code map, process lifecycle, and state ownership. The subsystem guides explain the main flows, design decisions, and relevant source files:
 
-### GUI watchdog
+| Subsystem | Reference |
+|---|---|
+| Nodes and commands | [Discovery, connection lifetime, response tracking](docs/NODES.md) |
+| Telemetry | [Ingest, timestamps, taring, display downsampling](docs/TELEMETRY.md) |
+| HELM and other clients | [REST, WebSocket state, client capabilities](docs/CLIENTS.md) |
+| Recording and media | [Sessions, CSV, cameras, audio](docs/RECORDING.md) |
+| QLCP | [Shared C library, CFFI build, versioning](docs/QLCP.md) |
+| Safety | [Hardware defaults, node watchdogs, loss of GUI control](docs/SAFETY.md) |
 
-If no GUI has been connected for **10 minutes**, the server sends an ESTOP to every
-registered control node so the stand reverts to its safe state (per QLCP §10.3, ESTOP
-drives every control to its configured `default_state`).
+The node firmware lives in [ctl-node-firmware](https://github.com/Queens-Rocket-Engineering-Team/ctl-node-firmware). Packet definitions live in the pinned [QLCP specification](https://github.com/Queens-Rocket-Engineering-Team/ctl-qlcp-lib/blob/3f37353920a323ef7feba61f3b0745106bce5ddf/PROTOCOL_SPECIFICATION.md).
 
-- **Liveness signal**: an open `/ws/state` WebSocket. Nothing else counts — REST polling
-  will not hold the watchdog off.
-- **Armed at boot**: a server that starts and is never opened in a GUI safes itself after
-  10 minutes.
-- **Latched**: each control node receives exactly one ESTOP per trip. A node that
-  connects (or reconnects on a fresh TCP session) while the GUI is still absent is safed
-  too, since the server cannot know what state it came up in.
-- **Re-arms** when a GUI reconnects.
+## Development
 
-There is no auto-recovery: after a trip, an operator has to re-command the stand. ESTOP
-is fire-and-forget (the node answers with STATUS, not ACK), so the logs record which
-sends succeeded, not which nodes actually reached safe state. Trips are counted at
-`GET /v1/metrics` under `gui_watchdog.trips_total` and logged in `recent_events`.
-The timeout and poll interval are `GUI_WATCHDOG_TIMEOUT_S` and
-`GUI_WATCHDOG_POLL_INTERVAL_S` in `src/vector/runtime/gui_watchdog.py`.
-
-## Setup
-
-### Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/) (recommended)
-- Or: Python 3.12+ with [uv](https://docs.astral.sh/uv/)
-- Local non-Docker qlcp builds also require CMake and a C compiler
-
-### Development (Docker)
+From a checkout, initialize the protocol submodule:
 
 ```bash
-docker compose -f compose.dev.yml up
+git submodule update --init --recursive
 ```
 
-This starts all necessary services with file watching — code changes in `src/` and `config.yaml` trigger automatic restarts.
+Edit [config.yaml](config.yaml) for your service addresses and cameras. For a simulator-only setup, use `cameras: []`. Nodes supply their sensor/control descriptions when they connect; those definitions do not go in this file.
 
-The `recordings/` directory is shared between the server and MediaMTX. Both containers run as `${DOCKER_UID:-1000}:${DOCKER_GID:-1000}` so session directories stay owned by you; set those in `.env` if your uid is not 1000. If an older checkout left a root-owned `recordings/` behind, take it back once with:
+### Run with Docker
+
+The development stack builds VECTOR locally and starts MediaMTX, Mumble, and HELM's tablet web build. It uses host networking for node discovery and device traffic.
 
 ```bash
-sudo chown -R "$(id -u):$(id -g)" recordings
+mkdir -p recordings
+docker compose -f compose.dev.yml up --build --watch
 ```
 
-MediaMTX is pinned to `1.20.0`. **Do not move it below 1.15.1** — earlier versions destroyed and recreated a path when its `recordPath` was patched, which is exactly what starting a session does, and every live WebRTC viewer would be dropped. If viewers ever drop at session start, check the MediaMTX log for `path destroyed`.
-
-Follow server logs with:
+[Compose Watch](https://docs.docker.com/compose/how-tos/file-watch/) enables the rules in [compose.dev.yml](compose.dev.yml): source/config changes restart the server; dependency and protocol changes rebuild it. Omit `--watch` for a normal run. To follow just the server's logs:
 
 ```bash
 docker compose -f compose.dev.yml logs -f server
 ```
 
-### Production (Docker)
+The server and MediaMTX run as UID/GID `1000:1000` by default. Set `DOCKER_UID` and `DOCKER_GID` in `.env` to match your user, and make `recordings/` writable by that user. See [recording storage](docs/RECORDING.md#storage-and-deployment) for the shared mount and ownership details.
 
-```bash
-GUI_TAG=v2.4.0 docker compose -f compose.prod.yml up -d
-```
+### Run from source
 
-Pulls pre-built images from `ghcr.io/queens-rocket-engineering-team/`. `GUI_TAG`
-must be set to a published [prop-new-control-gui](https://github.com/queens-rocket-engineering-team/prop-new-control-gui)
-release tag — there's no `latest` fallback in prod, so pin it to whatever GUI
-version this server release was tested against.
-
-### Local (No Docker)
+Install Python 3.12+, [uv](https://docs.astral.sh/uv/), Git, GCC, CMake, and make. The audio integration also needs the system Opus library; recording audio uses ffmpeg.
 
 ```bash
 uv sync
 uv run -m vector
 ```
 
-`uv sync` installs the environment. The qlcp native library and CFFI protocol
-extension are rebuilt automatically during package installation.
-Run `uv sync` again to force a local protocol rebuild.
+Installation builds the native QLCP library and Python extension. After changing the protocol library, rebuild with `uv sync --reinstall-package vector`; see [QLCP bindings](docs/QLCP.md#what-installation-builds).
 
-Run the mock device locally for testing with:
+The local process starts VECTOR only. MediaMTX and Mumble are separate services configured in YAML. VS Code users can install the repository's recommended extensions and select the `.venv` interpreter.
+
+### Work without hardware
+
+With VECTOR running, start a simulated node in another terminal:
 
 ```bash
-uv run -m tests.mock_device
+uv run -m tests.mock_device --server 127.0.0.1
 ```
 
-## Testing
+In VECTOR's interactive terminal, use `list` to check registration and `stream MockDevice 30` to request readings. `help` lists the other commands. HELM can connect to the same server for testing its displays and controls.
 
-The server uses [pytest](https://docs.pytest.org/) for unit testing. Tests are located in the `tests/` directory and can be run with:
+For GPS/flight-display work, use `uv run -m tests.chimera_mock_device --server 127.0.0.1`. Omit `--server` from either simulator to exercise multicast discovery.
+
+Run the Python test suite with:
 
 ```bash
 uv run pytest
 ```
 
-## Configuration
+The subsystem guides link to focused tests. Socket integration tests use simulated nodes; they do not require physical hardware.
 
-The server reads `config.yaml` for service connections and camera definitions:
+## Configuration and deployment
 
-```yaml
-accounts:
-  camera:
-    username: propcam
-    password: ...
+VECTOR reads `./config.yaml` by default. `PROP_CONFIG` selects another path, and `PROP_LOG_LEVEL` sets stdout verbosity.
 
-services:
-  recordings:
-    root: ./recordings                    # the server's view of the recordings tree
-    mediamtx_container_root: /recordings  # MediaMTX's view of the same tree
-  mediamtx:
-    ip: localhost
-    api_port: 9997
+| YAML setting | Purpose |
+|---|---|
+| `accounts.camera` | Camera credentials for ONVIF |
+| `cameras` | Camera IP addresses and ONVIF ports |
+| `services.mediamtx` | MediaMTX host and configuration API port |
+| `services.mumble` | Voice server connection and temporary audio directory |
+| `services.recordings` | VECTOR and MediaMTX paths to the same recordings directory |
 
-cameras:
-  - ip: 192.168.1.5
-    onvif_port: 2020
+The Compose stack exposes these services:
+
+| Service | Role |
+|---|---|
+| `server` | VECTOR API on `8000`; QLCP TCP on `50000`, UDP telemetry on `50001`, multicast discovery at `239.100.0.1:10000` |
+| `media` | Camera relay/recorder; configuration API on `9997`, WebRTC signaling on `8889` |
+| `gui` | Static HELM tablet build on `8080`; the browser connects directly to VECTOR and MediaMTX |
+| `mumble` | Voice server on `64738` for the retained audio integration |
+
+The tablet build has [limited command capabilities](docs/CLIENTS.md#client-capabilities-and-assumptions). It is separate from HELM's desktop application at the control point.
+
+For deployment, set `IMAGE_TAG` and `GUI_TAG` in `.env` to published image tags tested together, then run:
+
+```bash
+docker compose -f compose.prod.yml up -d
 ```
 
-Override the path with the `PROP_CONFIG` environment variable (defaults to `./config.yaml`).
+[compose.prod.yml](compose.prod.yml) currently uses the older image names `prop-teststand-server` and `prop-new-control-gui-web`, under `ghcr.io/queens-rocket-engineering-team/`. If unset, `IMAGE_TAG` defaults to `latest` and `GUI_TAG` to `v1.0.0`. MediaMTX is pinned to `1.20.0`; its [recording compatibility requirement](docs/RECORDING.md#cameras-and-mediamtx) matters when changing that version.
 
-`services.recordings` is a pair of views onto **one shared directory**: the server writes telemetry there, and MediaMTX writes video into it through its own bind mount. The two must agree — if `mediamtx_container_root` does not match the `media` service's volume in the compose file, MediaMTX will happily write video to a path nobody can read. The server logs the mapping at startup, and a session whose cameras all armed but produced no files records a `no_video_recorded` warning in its metadata.
+## Using VECTOR
 
-ESP32 devices configure themselves — each device sends a JSON CONFIG packet on connection describing its sensors and controls.
+Point HELM at the server's IP. The API reference is available at `/docs` on port `8000`; `/v1/state` gives a snapshot and `/v1/metrics` exposes diagnostics. The local CLI also supports discovery, streaming, controls, taring, and ESTOP.
 
-## Running
+Tares are applied on the server so all clients see the same zeroed readings. They survive node reconnects and are cleared on server restart. See [telemetry](docs/TELEMETRY.md#taring) for sample capture and name matching.
 
-| Command | Description |
-|---------|-------------|
-| `uv run -m vector` | Start the main server |
-| `uv run -m tests.mock_device` | Simulate an ESP32 device for testing |
-| `uv run -m tests.chimera_mock_device` | Simulate a GPS tracker looping a full flight (pad → 13 000 ft → drogue → main) |
+Recording sessions collect telemetry, available video/audio, and `session.json` into one directory. VECTOR's recordings are the default source for analysis; HELM also keeps a CSV backup at the control point. HELM coordinates acquisition and recording; calling `POST /v1/sessions/start` directly starts recording without changing node stream rates. Stop with `POST /v1/sessions/stop`, then download through the session API. See [recording and media](docs/RECORDING.md) for endpoints, formats, and retention.
 
-Once the server is running, an interactive CLI provides commands like `discover`, `list`, `stream <device> <Hz>`, `control <device> <name> <state>`, `tare <sensor>`, and `estop`.
-
-### Taring
-
-Sensor zeroing is applied server-side so every connected GUI sees the same numbers. `POST /v1/tares` with a sensor name zeroes that sensor from the mean of its most recent raw readings; `DELETE /v1/tares?sensor_name=...` removes the offset. Tares are keyed by sensor **name** rather than by device, so an offset set before a flight handoff still applies once the flight device takes over the same sensor name. They are held in memory only and are cleared when the server restarts.
-
-Readings on `/ws/telemetry/raw` carry both the tared `value` and the `tare` that was subtracted, so the untared reading is always recoverable as `value + tare`. The current offsets are also in the `/ws/state` snapshot under `tares`, with `tare.updated` / `tare.cleared` deltas as they change.
-
-## Recording sessions
-
-A test is recorded as a **session**: one directory holding the telemetry CSV, every camera's video, the Mumble audio, and a `session.json` describing the run. `POST /v1/sessions/start` with `{"name": "Hot Fire 3"}` arms everything at once; `POST /v1/sessions/stop` finishes every artifact and writes the final metadata.
-
-```
-recordings/
-  2026-08-10_143005_hot-fire-3/
-    session.json
-    telemetry.csv
-    audio/mumble_recording_1770745805.opus
-    video/Cam1_192.168.1.5_20260810_143007_512000.mp4
-```
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /v1/sessions/start` | Start recording. `409` if one is already running |
-| `POST /v1/sessions/stop` | Stop recording and finalize the session |
-| `GET /v1/sessions` | List sessions, newest first, plus free disk space |
-| `GET /v1/sessions/{id}` | A session's full metadata |
-| `GET /v1/sessions/{id}/download` | The whole session as a streamed zip |
-| `GET /v1/sessions/{id}/files/{path}` | One artifact, without downloading the archive |
-
-Starting a session **only records** — it never changes device stream rates, so the GUI keeps owning `STREAM`/`STOP`. Only telemetry is mandatory: a camera that fails to arm or an unreachable Mumble server is recorded as a failed component under `components` in `session.json` and the session continues. The active session is also in the `/ws/state` snapshot under `session`, with `session.started` / `session.updated` / `session.stopped` deltas, so every connected GUI agrees on whether a test is recording.
-
-Sessions are never pruned automatically. Watch `free_bytes` from `GET /v1/sessions`.
-
-### Aligning the recordings
-
-Video filenames come from MediaMTX's wall clock while telemetry timestamps are on the server's monotonic clock. Devices time-sync to that same monotonic clock, so `session.json`'s `clock` block converts either one:
-
-```
-wall_clock = started_unix + (device_timestamp - started_monotonic)
-```
-
-### telemetry.csv
-
-```
-device_timestamp,source,PT101 [PSI],TC101 [C],heater_HEATER1,relay_SAFE24,valve_AV101
-236711.7952,MockDevice,20.5075,44.2267,50.5000,0,1
-```
-
-Blocks run sensors, then controls, then Kasa outlets, each sorted alphabetically. Control columns are prefixed with the group the device declares in its QLCP config. Boolean controls are written as a bit: `1` when a valve is `OPEN`, and `1` when anything else is `CLOSED` — inverted, because those relays are wired normally-closed so `CLOSED` is the energized state. Non-boolean controls carry their actual value. An empty sensor cell means that sensor was absent from that batch, which is distinct from a reading of zero. `session.json` restates all of this under `telemetry.semantics`.
-
-## Protocol
-
-Devices communicate using the QRET Launch Control Protocol (QLCP) over TCP (port 50000) and UDP (port 50001). Devices are discovered via multicast on `239.100.0.1:10000` using a QLCP discovery packet. On discovery, the device opens a TCP connection to the server and sends its CONFIG. The device then time-syncs to the server and normal operation begins (streaming, control commands, heartbeats).
-
-For more information on protocol specifications, see [ctl-qlcp-lib](https://github.com/Queens-Rocket-Engineering-Team/ctl-qlcp-lib).
-
-## ESP32 Setup
-
-For the microcontroller side of this project, see [ctl-node-firmware](https://github.com/Queens-Rocket-Engineering-Team/ctl-node-firmware).
-
-## IDE Setup
-
-This project is intended to be opened in VSCode. Install the recommended extensions when prompted.
+VECTOR's GUI watchdog attempts ESTOP after ten minutes with no `/ws/state` clients, including after a boot where no GUI connects. Any state client counts, including a tablet, so field tablets are expected to be disconnected during armed operations. Read the [safety guide](docs/SAFETY.md) for the node watchdogs, hardware defaults, and meaning of a successful command send.
