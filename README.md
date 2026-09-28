@@ -2,7 +2,7 @@
 
 VECTOR (Vehicle Event, Control, Telemetry, and Operations Router) is the central server for QRET's propulsion ground control system. It connects control nodes to [HELM](https://github.com/Queens-Rocket-Engineering-Team/ctl-helm), collects telemetry, sends control commands, and records tests with camera video and metadata.
 
-VECTOR runs on Linux on the pad or test-stand LAN. HELM runs at the control point and reaches it over long-range a wireless link. Nodes communicate with VECTOR using QLCP; HELM uses REST and WebSockets. Camera video reaches HELM through MediaMTX.
+VECTOR runs on Linux on the pad or test-stand LAN. HELM runs at the control point and reaches it over a long-range wireless link. Nodes communicate with VECTOR using QLCP; HELM uses REST and WebSockets. Camera video reaches HELM through MediaMTX.
 
 ```mermaid
 flowchart TB
