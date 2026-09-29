@@ -10,10 +10,10 @@ dependencies = [
     # Running requirements
     "colorama",
     "numpy",
-    "fastapi>=0.116.1",
+    "fastapi>=0.141.1",
     "uvicorn[standard]>=0.35.0",
     "aioconsole>=0.8.1",
-    "aiohttp>=3.13.2",
+    "aiohttp>=3.14.3",
     "pyyaml>=6.0.3",
     "onvif-zeep-async>=4.0.4",
     "python-kasa>=0.10.2",
@@ -26,10 +26,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ruff",
-    "uv",
+    "uv>=0.11.15",
     "hatch-vcs",
     "mypy",
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
     "pydantic>=2.11.7",
 ]
 
@@ -47,7 +47,7 @@ cache-keys = [
 ]
 
 [build-system]
-requires = ["hatchling>=1.27.0", "hatch-vcs", "cffi>=2.0.0", "setuptools>=82.0.1"]
+requires = ["hatchling>=1.27.0", "hatch-vcs", "cffi>=2.0.0", "setuptools>=83.0.0"]
 build-backend = "hatchling.build"
 
 [tool.uv.sources]
