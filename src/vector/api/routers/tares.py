@@ -6,12 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from vector.api.deps import get_runtime
-from vector.runtime.services import RuntimeServices
-from vector.runtime.telemetry_ingest import (
+from vector.core import (
     TARE_DEFAULT_SAMPLES,
     TARE_SAMPLE_CAPACITY,
     TareCaptureError,
 )
+from vector.runtime.services import RuntimeServices
 
 
 logger = logging.getLogger(__name__)
@@ -39,12 +39,12 @@ class TareInfo(BaseModel):
 
 def _devices_with_sensor(rt: RuntimeServices, sensor_name: str) -> list[str]:
     """Return connected devices carrying *sensor_name*. Empty is valid: tares may be pre-staged."""
-    return sorted(device.name for device in rt.esp_runtime.get_registered_devices().values() if sensor_name in device.sensors)
+    return sorted({binding.source.name for binding in rt.core.sensors(sensor_name) if binding.source.connected})
 
 
 @router.get("/v1/tares", summary="Get the tare offset currently applied to each sensor")
 async def get_tares(rt: Annotated[RuntimeServices, Depends(get_runtime)]) -> dict[str, float]:
-    return rt.system_state.tares()
+    return rt.core.tares()
 
 
 @router.post("/v1/tares", summary="Tare a sensor by name across every device reporting it")
@@ -60,9 +60,10 @@ async def set_tare(
         if not math.isfinite(body.offset):
             raise HTTPException(400, "offset must be a finite number.")
         offset = body.offset
+        rt.core.set_tare(body.sensor_name, offset)
     else:
         try:
-            offset, sampled_device, sample_count = rt.telemetry_runtime.capture_tare_offset(
+            offset, sampled_device, sample_count = rt.core.capture_tare(
                 body.sensor_name,
                 device_name=body.device_name,
                 samples=body.samples,
@@ -70,7 +71,6 @@ async def set_tare(
         except TareCaptureError as exc:
             raise HTTPException(409, str(exc)) from None
 
-    rt.state_stream.publish(rt.system_state.set_tare(body.sensor_name, offset))
     logger.info("User tared sensor %s to offset %s (sampled %s readings from %s)", body.sensor_name, offset, sample_count, sampled_device)
 
     return TareInfo(
@@ -89,11 +89,10 @@ async def clear_tare(
     # JSON keys and may contain characters that do not survive a path.
     sensor_name: Annotated[str, Query(min_length=1)],
 ) -> TareInfo:
-    event = rt.system_state.clear_tare(sensor_name)
+    event = rt.core.clear_tare(sensor_name)
     if event is None:
         logger.info("User cleared tare for %s, which was not tared", sensor_name)
     else:
-        rt.state_stream.publish(event)
         logger.info("User cleared tare for sensor %s", sensor_name)
 
     return TareInfo(

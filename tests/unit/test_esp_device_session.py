@@ -1,11 +1,11 @@
 from __future__ import annotations
 import asyncio
 import socket
-import time
 from typing import Any, cast
 
 import pytest
 
+from vector.core import Core
 from vector.qlcp.enums import ControlState, PacketType
 from vector.runtime.command_tracker import CommandLifecycle, CommandTracker
 from vector.runtime.esp_connection_runtime import ESPConnectionRuntime, ESPDeviceSession
@@ -46,9 +46,11 @@ def _make_session() -> tuple[ESPDeviceSession, socket.socket]:
 def _make_runtime() -> tuple[ESPConnectionRuntime, CommandTracker, FakeStateStream]:
     tracker = CommandTracker()
     state_stream = FakeStateStream()
+    system_state = SystemState(core=Core())
+    system_state.set_publisher(state_stream.publish)
     runtime = ESPConnectionRuntime(
         command_tracker=tracker,
-        system_state=SystemState(command_tracker=tracker),
+        system_state=system_state,
         state_stream=state_stream,
     )
     return runtime, tracker, state_stream
@@ -79,7 +81,7 @@ def test_runtime_marks_session_unresponsive_at_heartbeat_miss_limit() -> None:
     session, peer_sock = _make_session()
     runtime, tracker, _stream = _make_runtime()
     runtime.devices.register(session)
-    runtime.system_state.register_device(session)
+    runtime.state_adapter.register_device(session)
     try:
         command = tracker.mark_sent(
             connection_key=session.connection_key,

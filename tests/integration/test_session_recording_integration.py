@@ -16,6 +16,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from tests.mock_device import MockSensorDevice
+from vector.core import Core
 from vector.runtime.command_tracker import CommandTracker
 from vector.runtime.esp_connection_runtime import ESPConnectionRuntime
 from vector.runtime.recording_paths import RecordingPaths
@@ -24,7 +26,6 @@ from vector.runtime.session_runtime import SessionRuntime
 from vector.runtime.session_telemetry import TelemetrySessionPublisher
 from vector.runtime.telemetry_ingest import TelemetryRuntime
 from vector.state.system_state import SystemState
-from tests.mock_device import MockSensorDevice
 
 
 if TYPE_CHECKING:
@@ -86,11 +87,13 @@ async def _harness(root: Path) -> AsyncGenerator[tuple[ESPConnectionRuntime, Sys
     tcp_port = _free_port(socket.SOCK_STREAM)
     udp_port = _free_port(socket.SOCK_DGRAM)
 
-    state = SystemState(command_tracker=CommandTracker())
+    state = SystemState(core=Core())
     stream = _FakeStateStream()
+    state.set_publisher(stream.publish)  # type: ignore[arg-type]
     esp_runtime = ESPConnectionRuntime(command_tracker=CommandTracker(), system_state=state, state_stream=stream)  # type: ignore[arg-type]
     publisher = TelemetrySessionPublisher()
-    telemetry_runtime = TelemetryRuntime(esp_runtime.get_device_by_address, publisher, tare_for=state.tare_for)
+    telemetry_runtime = TelemetryRuntime(esp_runtime.get_device_by_address)
+    state.core.subscribe_samples(publisher.publish_batch)
     session_runtime = SessionRuntime(
         paths=RecordingPaths.from_config({"root": str(root), "mediamtx_container_root": "/recordings"}),
         telemetry_publisher=publisher,
@@ -161,6 +164,9 @@ def test_session_records_telemetry_metadata_and_a_downloadable_archive(tmp_path:
         # Columns come from the device's declared QLCP groups, and the analog heater is
         # a real column rather than a boolean that could only ever read 0.
         assert header[:2] == ["device_timestamp", "source"]
+        assert header[-2:] == ["source_provider", "source_key"]
+        assert all(line.split(",")[-2:] == ["qlcp", device.device_name] for line in lines[1:])
+        assert metadata["telemetry"]["columns"][-2:] == ["source_provider", "source_key"]
         assert "PT101 [PSI]" in header
         assert "heater_HEATER1" in header
         assert "relay_SAFE24" in header

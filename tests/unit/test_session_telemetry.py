@@ -1,16 +1,20 @@
 from __future__ import annotations
+import csv
+import io
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from vector.qlcp.config_models import ControlConfig, SensorConfig
-from vector.qlcp.enums import ControlState, ControlType
+from vector.core import ControlDefinition, ControlType, SensorDefinition, TelemetryBatch, TelemetryReading
 from vector.runtime.session_telemetry import (
     SessionTelemetryWriter,
     TelemetrySessionPublisher,
     build_columns,
     kasa_column_keys,
 )
-from vector.runtime.telemetry_ingest import TelemetryBatch, TelemetryReading
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @dataclass
@@ -22,8 +26,8 @@ class _Kasa:
 
 @dataclass
 class _Schema:
-    sensors: tuple[SensorConfig, ...] = ()
-    controls: tuple[ControlConfig, ...] = ()
+    sensors: tuple[SensorDefinition, ...] = ()
+    controls: tuple[ControlDefinition, ...] = ()
     kasa: tuple[_Kasa, ...] = ()
 
 
@@ -31,12 +35,12 @@ class _FakeState:
     """Stands in for SystemState, exposing only what the writer reads."""
 
     def __init__(self, schema: _Schema, controls: dict[str, str | None] | None = None, kasa: dict[str, bool] | None = None) -> None:
-        self._schema = schema
+        self.schema = schema
         self._controls = controls or {}
         self._kasa = kasa or {}
 
     def recording_schema(self) -> _Schema:
-        return self._schema
+        return self.schema
 
     def control_states(self) -> dict[str, str | None]:
         return self._controls
@@ -45,23 +49,21 @@ class _FakeState:
         return self._kasa
 
 
-def _sensor(name: str, unit: str = "PSI", sensor_id: int = 0) -> SensorConfig:
-    return SensorConfig(id=sensor_id, name=name, group="pressure_transducer", unit=unit)
+def _sensor(name: str, unit: str = "PSI") -> SensorDefinition:
+    return SensorDefinition(name=name, group="pressure_transducer", unit=unit)
 
 
-def _control(name: str, group: str, control_type: ControlType = ControlType.BOOL, control_id: int = 0) -> ControlConfig:
-    return ControlConfig(
-        id=control_id,
-        name=name,
-        group=group,
-        default=ControlState.CLOSED if control_type == ControlType.BOOL else 0,
-        type=control_type,
-        unit=None,
-    )
+def _control(name: str, group: str, control_type: ControlType = ControlType.BOOL) -> ControlDefinition:
+    return ControlDefinition(name=name, group=group, type=control_type, default=False if control_type == ControlType.BOOL else 0)
 
 
-def _batch(values: dict[str, float], device_name: str = "MockDevice", timestamp_s: float = 236711.7952) -> TelemetryBatch:
+def _batch(
+    values: dict[str, float], device_name: str = "MockDevice", timestamp_s: float = 236711.7952,
+    *, source_provider: str = "test", source_key: str | None = None,
+) -> TelemetryBatch:
     return TelemetryBatch(
+        source_provider=source_provider,
+        source_key=source_key if source_key is not None else device_name,
         device_name=device_name,
         device_address="10.0.0.1",
         connection_key="10.0.0.1:1",
@@ -91,42 +93,48 @@ def _write(tmp_path: Path, state: _FakeState, batches: list[TelemetryBatch]) -> 
 
 def test_header_orders_blocks_and_annotates_units() -> None:
     schema = _Schema(
-        sensors=(_sensor("TC101", "C", 1), _sensor("PT101", "PSI", 0)),
+        sensors=(_sensor("TC101", "C"), _sensor("PT101", "PSI")),
         controls=(_control("AV101", "valve"), _control("SAFE24", "relay"), _control("HEATER1", "heater", ControlType.FLOAT32)),
         kasa=(_Kasa("10.0.0.5", "Pump"),),
     )
 
     plan = build_columns(schema)  # type: ignore[arg-type]
 
-    assert plan.header == "device_timestamp,source,PT101 [PSI],TC101 [C],heater_HEATER1,relay_SAFE24,valve_AV101,kasa_Pump\n"
+    assert plan.header == (
+        "device_timestamp,source,PT101 [PSI],TC101 [C],heater_HEATER1,relay_SAFE24,valve_AV101,kasa_Pump,source_provider,source_key\n"
+    )
+    assert plan.column_names == (
+        "device_timestamp", "source", "PT101", "TC101", "heater_HEATER1", "relay_SAFE24", "valve_AV101", "kasa_Pump",
+        "source_provider", "source_key",
+    )
 
 
 def test_sensor_columns_sort_by_raw_name_not_by_the_annotated_label() -> None:
     # "PT1 [PSI]" < "PT1B [PSI]" only holds if the sort happens before the unit is
     # appended -- comparing the labels puts the space-bearing name first either way,
     # so use names where the two orderings genuinely disagree.
-    schema = _Schema(sensors=(_sensor("PT1B", "PSI", 1), _sensor("PT1", "PSI", 0)))
+    schema = _Schema(sensors=(_sensor("PT1B", "PSI"), _sensor("PT1", "PSI")))
 
     plan = build_columns(schema)  # type: ignore[arg-type]
 
     assert plan.sensor_names == ("PT1", "PT1B")
-    assert plan.header == "device_timestamp,source,PT1 [PSI],PT1B [PSI]\n"
+    assert plan.header == "device_timestamp,source,PT1 [PSI],PT1B [PSI],source_provider,source_key\n"
 
 
 def test_sensor_without_a_unit_keeps_a_bare_name() -> None:
     plan = build_columns(_Schema(sensors=(_sensor("GPSFIX", ""),)))  # type: ignore[arg-type]
 
-    assert plan.header == "device_timestamp,source,GPSFIX\n"
+    assert plan.header == "device_timestamp,source,GPSFIX,source_provider,source_key\n"
 
 
 def test_empty_blocks_are_omitted_entirely() -> None:
     plan = build_columns(_Schema(controls=(_control("AV101", "valve"),)))  # type: ignore[arg-type]
 
-    assert plan.header == "device_timestamp,source,valve_AV101\n"
+    assert plan.header == "device_timestamp,source,valve_AV101,source_provider,source_key\n"
 
 
 def test_header_degrades_to_the_prefix_when_nothing_is_known() -> None:
-    assert build_columns(_Schema()).header == "device_timestamp,source\n"  # type: ignore[arg-type]
+    assert build_columns(_Schema()).header == "device_timestamp,source,source_provider,source_key\n"  # type: ignore[arg-type]
 
 
 def test_control_group_becomes_the_column_prefix() -> None:
@@ -155,20 +163,20 @@ def test_kasa_keys_are_sanitized_and_deduplicated() -> None:
 
 
 def test_row_formats_timestamp_and_values_to_four_decimals(tmp_path: Path) -> None:
-    state = _FakeState(_Schema(sensors=(_sensor("PT101"), _sensor("PT201", "PSI", 1))))
+    state = _FakeState(_Schema(sensors=(_sensor("PT101"), _sensor("PT201", "PSI"))))
 
     _write(tmp_path, state, [_batch({"PT101": 20.50749, "PT201": -4.22671})])
 
     rows = (tmp_path / "telemetry.csv").read_text().splitlines()
-    assert rows[1] == "236711.7952,MockDevice,20.5075,-4.2267"
+    assert rows[1] == "236711.7952,MockDevice,20.5075,-4.2267,test,MockDevice"
 
 
 def test_missing_sensor_leaves_an_empty_cell(tmp_path: Path) -> None:
-    state = _FakeState(_Schema(sensors=(_sensor("PT101"), _sensor("PT201", "PSI", 1))))
+    state = _FakeState(_Schema(sensors=(_sensor("PT101"), _sensor("PT201", "PSI"))))
 
     _write(tmp_path, state, [_batch({"PT101": 1.0})])
 
-    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,1.0000,"
+    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,1.0000,,test,MockDevice"
 
 
 def test_source_column_carries_the_device_name(tmp_path: Path) -> None:
@@ -180,17 +188,17 @@ def test_source_column_carries_the_device_name(tmp_path: Path) -> None:
 
 
 def test_valve_reads_one_when_open_and_relay_reads_one_when_closed(tmp_path: Path) -> None:
-    schema = _Schema(controls=(_control("AV101", "valve"), _control("SAFE24", "relay", control_id=1)))
+    schema = _Schema(controls=(_control("AV101", "valve"), _control("SAFE24", "relay")))
     state = _FakeState(schema, controls={"AV101": "OPEN", "SAFE24": "OPEN"})
 
     _write(tmp_path, state, [_batch({})])
 
     lines = (tmp_path / "telemetry.csv").read_text().splitlines()
     # Columns are ordered by group, so the relay comes before the valve.
-    assert lines[0] == "device_timestamp,source,relay_SAFE24,valve_AV101"
+    assert lines[0] == "device_timestamp,source,relay_SAFE24,valve_AV101,source_provider,source_key"
     # Same reported state, opposite bits: relays are wired normally-closed, so CLOSED
     # is the energized state.
-    assert lines[1] == "236711.7952,MockDevice,0,1"
+    assert lines[1] == "236711.7952,MockDevice,0,1,test,MockDevice"
 
 
 def test_relay_reads_one_when_closed(tmp_path: Path) -> None:
@@ -198,7 +206,7 @@ def test_relay_reads_one_when_closed(tmp_path: Path) -> None:
 
     _write(tmp_path, state, [_batch({})])
 
-    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,1"
+    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,1,test,MockDevice"
 
 
 def test_unreported_boolean_control_reads_zero(tmp_path: Path) -> None:
@@ -206,7 +214,7 @@ def test_unreported_boolean_control_reads_zero(tmp_path: Path) -> None:
 
     _write(tmp_path, state, [_batch({})])
 
-    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,0"
+    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,0,test,MockDevice"
 
 
 def test_analog_control_records_its_setpoint_rather_than_a_bit(tmp_path: Path) -> None:
@@ -215,7 +223,7 @@ def test_analog_control_records_its_setpoint_rather_than_a_bit(tmp_path: Path) -
 
     _write(tmp_path, state, [_batch({})])
 
-    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,50.5000"
+    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,50.5000,test,MockDevice"
 
 
 def test_unreported_analog_control_leaves_an_empty_cell(tmp_path: Path) -> None:
@@ -224,7 +232,7 @@ def test_unreported_analog_control_leaves_an_empty_cell(tmp_path: Path) -> None:
 
     _write(tmp_path, state, [_batch({})])
 
-    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,"
+    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,,test,MockDevice"
 
 
 def test_kasa_bit_follows_the_outlet_power_state(tmp_path: Path) -> None:
@@ -232,17 +240,29 @@ def test_kasa_bit_follows_the_outlet_power_state(tmp_path: Path) -> None:
 
     _write(tmp_path, state, [_batch({})])
 
-    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,1"
+    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,1,test,MockDevice"
 
 
-def test_a_comma_in_a_sensor_name_is_not_quoted() -> None:
-    # Documents a real limitation: fields are written unquoted, so a comma in a name
-    # would corrupt the file. Quoting would change how every existing consumer parses
-    # these recordings, for a case that has never occurred; detect it instead.
+def test_a_comma_in_a_sensor_name_is_quoted() -> None:
     plan = build_columns(_Schema(sensors=(_sensor("PT,101"),)))  # type: ignore[arg-type]
 
-    assert plan.header == "device_timestamp,source,PT,101 [PSI]\n"
-    assert any("," in name for name in plan.sensor_names)
+    assert list(csv.reader(io.StringIO(plan.header))) == [[
+        "device_timestamp", "source", "PT,101 [PSI]", "source_provider", "source_key",
+    ]]
+
+
+def test_source_label_and_identity_are_csv_quoted(tmp_path: Path) -> None:
+    state = _FakeState(_Schema(sensors=(_sensor("PT101"),)))
+    _write(tmp_path, state, [_batch(
+        {"PT101": 1.0}, device_name='Pad, "north"\nantenna',
+        source_provider="wireless,poller", source_key='radio,"one"\nlink',
+    )])
+
+    with (tmp_path / "telemetry.csv").open(newline="") as handle:
+        assert list(csv.DictReader(handle)) == [{
+            "device_timestamp": "236711.7952", "source": 'Pad, "north"\nantenna', "PT101 [PSI]": "1.0000",
+            "source_provider": "wireless,poller", "source_key": 'radio,"one"\nlink',
+        }]
 
 
 # ---------------------------------------------------------------------------
@@ -258,16 +278,18 @@ def test_a_device_appearing_mid_recording_gets_its_own_file(tmp_path: Path) -> N
 
     writer.write_batch(_batch({"PT101": 1.0}))
     # A device connects that was unknown when the header was written.
-    state._schema = _Schema(sensors=(_sensor("PT101"), _sensor("GPSALT", "m", 1)))
+    state.schema = _Schema(sensors=(_sensor("PT101"), _sensor("GPSALT", "m")))
     writer.write_batch(_batch({"GPSALT": 100.0}, device_name="Chimera"))
     writer.close()
 
     assert writer.late_files == ("telemetry_late.csv",)
     # The primary file keeps its original columns and only its own device's rows.
-    assert (tmp_path / "telemetry.csv").read_text() == "device_timestamp,source,PT101 [PSI]\n236711.7952,MockDevice,1.0000\n"
+    assert (tmp_path / "telemetry.csv").read_text() == (
+        "device_timestamp,source,PT101 [PSI],source_provider,source_key\n236711.7952,MockDevice,1.0000,test,MockDevice\n"
+    )
     late = (tmp_path / "telemetry_late.csv").read_text().splitlines()
-    assert late[0] == "device_timestamp,source,GPSALT [m],PT101 [PSI]"
-    assert late[1] == "236711.7952,Chimera,100.0000,"
+    assert late[0] == "device_timestamp,source,GPSALT [m],PT101 [PSI],source_provider,source_key"
+    assert late[1] == "236711.7952,Chimera,100.0000,,test,Chimera"
 
 
 def test_a_second_late_device_gets_a_numbered_file(tmp_path: Path) -> None:
@@ -276,7 +298,7 @@ def test_a_second_late_device_gets_a_numbered_file(tmp_path: Path) -> None:
     writer = SessionTelemetryWriter.open(tmp_path / "telemetry.csv", state, plan)  # type: ignore[arg-type]
 
     writer.write_batch(_batch({"PT101": 1.0}))  # commits the header
-    state._schema = _Schema(sensors=(_sensor("PT101"), _sensor("GPSALT", "m", 1), _sensor("BATV", "V", 2)))
+    state.schema = _Schema(sensors=(_sensor("PT101"), _sensor("GPSALT", "m"), _sensor("BATV", "V")))
     writer.write_batch(_batch({"GPSALT": 1.0}, device_name="Chimera"))
     writer.write_batch(_batch({"BATV": 2.0}, device_name="Beacon"))
     writer.close()
@@ -290,12 +312,30 @@ def test_columns_are_re_derived_if_a_device_appears_before_the_first_row(tmp_pat
     state = _FakeState(_Schema())
     writer = SessionTelemetryWriter.open(tmp_path / "telemetry.csv", state, build_columns(state.recording_schema()))  # type: ignore[arg-type]
 
-    state._schema = _Schema(sensors=(_sensor("PT101"),))
+    state.schema = _Schema(sensors=(_sensor("PT101"),))
     writer.write_batch(_batch({"PT101": 1.0}))
     writer.close()
 
     assert writer.late_files == ()
-    assert (tmp_path / "telemetry.csv").read_text() == "device_timestamp,source,PT101 [PSI]\n236711.7952,MockDevice,1.0000\n"
+    assert (tmp_path / "telemetry.csv").read_text() == (
+        "device_timestamp,source,PT101 [PSI],source_provider,source_key\n236711.7952,MockDevice,1.0000,test,MockDevice\n"
+    )
+
+
+def test_late_columns_include_batch_readings_missing_from_the_schema_snapshot(tmp_path: Path) -> None:
+    state = _FakeState(_Schema(sensors=(_sensor("PT101"),)))
+    writer = _write(tmp_path, state, [
+        _batch({"PT101": 1.0}),
+        _batch({"FIRST": 2.0}, device_name="Late"),
+        _batch({"SECOND": 3.0}, device_name="Late"),
+        _batch({"FIRST": 4.0}, device_name="Late"),
+    ])
+
+    assert writer.late_files == ("telemetry_late.csv", "telemetry_late_2.csv")
+    with (tmp_path / "telemetry_late.csv").open(newline="") as handle:
+        assert [row["FIRST [PSI]"] for row in csv.DictReader(handle)] == ["2.0000", "4.0000"]
+    with (tmp_path / "telemetry_late_2.csv").open(newline="") as handle:
+        assert [row["SECOND [PSI]"] for row in csv.DictReader(handle)] == ["3.0000"]
 
 
 # ---------------------------------------------------------------------------

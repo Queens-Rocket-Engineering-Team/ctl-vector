@@ -1,88 +1,104 @@
+"""Kasa discovery and device I/O behind the shared control interface."""
+
 from __future__ import annotations
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+import time
+from functools import partial
 
 from kasa import Device, Discover, KasaException
 
+from vector.core import ControlBinding, ControlDefinition, ControlObservation, ControlStatus, ControlType, ControlValue, Core, DispatchResult, Source
 
-if TYPE_CHECKING:
-    from vector.runtime.state_stream import StateStream
-    from vector.state.system_state import SystemState
 
 logger = logging.getLogger(__name__)
 
 
 class KasaRuntime:
-    def __init__(self, *, system_state: SystemState, state_stream: StateStream) -> None:
-        self._registry: dict[str, Device] = {}
-        self._system_state = system_state
-        self._state_stream = state_stream
-
-    def _emit(self, event: dict[str, object] | None) -> None:
-        """Emit an event to the state stream."""
-        self._state_stream.publish(event)
+    def __init__(self, *, core: Core) -> None:
+        self.core = core
+        self._registry: dict[str, tuple[Device, Source]] = {}
 
     def get_device(self, host: str) -> Device | None:
-        """Return the Kasa device for *host*, or None if not registered."""
-        return self._registry.get(host)
+        entry = self._registry.get(host)
+        return entry[0] if entry is not None else None
 
     async def get_devices(self) -> list[Device]:
-        """Return a list of all registered Kasa devices, updating their info first."""
-        devices = list(self._registry.values())
-        await asyncio.gather(*(dev.update() for dev in devices))
-        return devices
+        entries = list(self._registry.values())
+        await asyncio.gather(*(dev.update() for dev, _ in entries))
+        for dev, source in entries:
+            if self._registry.get(dev.host) == (dev, source):
+                control = source.control("power")
+                if control is not None and (control.reported is None or control.reported.value != dev.is_on):
+                    source.report_control("power", dev.is_on)
+        return [dev for dev, _ in entries]
 
     async def discover(self) -> None:
-        """Discover Kasa devices on the network and register them."""
         try:
             logger.info("Sending kasa discovery request...")
-
             devices = await Discover.discover()
             await asyncio.gather(*(self._register_discovered_device(dev) for dev in devices.values()))
-
         except Exception:
             logger.exception("Failed to discover Kasa devices")
 
     async def set_state(self, host: str, active: bool) -> Device:
-        """Set the power state of the Kasa device at *host* to *active* (True for on, False for off)."""
-        dev = self._require_device(host)
+        """Compatibility entry point used by the existing Kasa HTTP endpoint."""
+        dev, source = self._require_device(host)
+        target = source.control("power")
+        assert target is not None
+        result, = await self.core.set_control([target], active)
+        if not result.submitted:
+            if result.cause is not None:
+                raise result.cause
+            raise RuntimeError(result.error or "Kasa control failed")
+        return dev
 
+    async def _write_power(self, dev: Device, target: ControlBinding, value: ControlValue) -> DispatchResult:
+        """Write power, then report the observed value after a successful refresh."""
+        source = target.source
+        active = bool(value)
         try:
             if active:
                 await dev.turn_on()
-                logger.info("Turned on Kasa device at %s", host)
             else:
                 await dev.turn_off()
-                logger.info("Turned off Kasa device at %s", host)
-
-            await dev.update()  # Update device info after sending command
-            self._emit(self._system_state.record_kasa_state(dev.host, dev.is_on))
-            return dev
-
+            await dev.update()
+            source.report_control("power", dev.is_on)
+            logger.info("Set Kasa device at %s: active=%s", dev.host, active)
+            return DispatchResult(submitted=True)
         except KasaException:
-            logger.exception("Kasa error controlling device at %s", host)
-            self._remove_device(host)
-            raise  # Re-raise to be handled by API layer
+            logger.exception("Kasa error controlling device at %s", dev.host)
+            # A delayed failure from an old discovery must not remove its replacement.
+            if self._registry.get(dev.host) == (dev, source):
+                self._remove_device(dev.host)
+            raise
         except Exception:
-            logger.exception("Failed to control Kasa device at %s", host)
-            raise  # Re-raise to be handled by API layer
+            logger.exception("Failed to control Kasa device at %s", dev.host)
+            raise
 
     async def _register_discovered_device(self, dev: Device) -> None:
-        """Register a discovered Kasa device, updating its info first."""
         await dev.update()
-        logger.info("Discovered Kasa device: %s (%s)", dev.alias if dev.alias is not None else '<No Alias>', dev.host)
-        self._registry[dev.host] = dev
-        self._emit(self._system_state.register_kasa_device(dev.host, dev.alias or "", dev.model, dev.is_on))
+        logger.info("Discovered Kasa device: %s (%s)", dev.alias or "<No Alias>", dev.host)
 
-    def _require_device(self, host: str) -> Device:
-        """Return the Kasa device for *host*, raising KeyError if not registered."""
-        device = self._registry.get(host)
-        if device is None:
-            logger.error("No Kasa device found at %s", host)
-            raise KeyError("No Kasa device found")  # Raise KeyError to be handled by API layer
-        return device
+        source = self.core.register_source(
+            "kasa",
+            dev.host,
+            name=dev.alias or dev.host,
+            address=dev.host,
+            metadata={"alias": dev.alias or "", "model": dev.model},
+            controls=[ControlDefinition(name="power", group="power", type=ControlType.BOOL)],
+            control_handler=partial(self._write_power, dev),
+            initial_controls={"power": ControlObservation(value=dev.is_on, timestamp=time.monotonic(), status=ControlStatus.CONFIRMED)},
+        )
+        self._registry[dev.host] = (dev, source)
+
+    def _require_device(self, host: str) -> tuple[Device, Source]:
+        entry = self._registry.get(host)
+        if entry is None:
+            raise KeyError("No Kasa device found")
+        return entry
 
     def _remove_device(self, host: str) -> None:
-        self._registry.pop(host, None)  # deregisters fully; recoverable only via re-discovery
-        self._emit(self._system_state.mark_kasa_unavailable(host))
+        entry = self._registry.pop(host, None)
+        if entry is not None:
+            entry[1].close()

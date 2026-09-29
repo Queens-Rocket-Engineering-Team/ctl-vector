@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     from fastapi import WebSocket
 
-    from vector.runtime.telemetry_ingest import TelemetryBatch
+    from vector.core import TelemetryBatch
 
 DISPLAY_TARGET_HZ = 30.0
 DISPLAY_POINTS_PER_BUCKET = 8  # M4 requires >= 8 (at least 2 windows x 4 points)
@@ -82,6 +82,8 @@ class _SensorBuffer:
 
 @dataclass(slots=True)
 class _DeviceBucket:
+    source_provider: str
+    source_key: str
     device_name: str
     device_address: str
     connection_key: str
@@ -123,7 +125,7 @@ class TelemetryDisplayStream(BoundedWebSocketFanout):
         self._points_per_bucket = points_per_bucket
         self._downsamplers = downsamplers if downsamplers is not None else default_downsamplers()
         self._client_algorithms: dict[WebSocket, DownsampleAlgorithm] = {}
-        self._buckets: dict[tuple[str, str], _DeviceBucket] = {}
+        self._buckets: dict[tuple[str, str, str], _DeviceBucket] = {}
 
     async def handle_client(
         self,
@@ -144,7 +146,8 @@ class TelemetryDisplayStream(BoundedWebSocketFanout):
             return
 
         bucket_index = int(batch.timestamp_s / self._bucket_interval_s)
-        series_key = (batch.device_name, batch.connection_key)
+        # Labels and provider-supplied connection keys can coincide across sources.
+        series_key = (batch.source_provider, batch.source_key, batch.connection_key)
         now = time.monotonic()
 
         device_bucket = self._buckets.get(series_key)
@@ -157,6 +160,8 @@ class TelemetryDisplayStream(BoundedWebSocketFanout):
 
         if device_bucket is None:
             device_bucket = _DeviceBucket(
+                source_provider=batch.source_provider,
+                source_key=batch.source_key,
                 device_name=batch.device_name,
                 device_address=batch.device_address,
                 connection_key=batch.connection_key,
@@ -189,6 +194,8 @@ class TelemetryDisplayStream(BoundedWebSocketFanout):
         return {
             "type": "telemetry.display_batch",
             "algorithm": algorithm.value,
+            "source_provider": bucket.source_provider,
+            "source_key": bucket.source_key,
             "device_name": bucket.device_name,
             "device_address": bucket.device_address,
             "connection_key": bucket.connection_key,
