@@ -12,8 +12,6 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, TextIO
 
-from vector.qlcp.enums import ControlType
-
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

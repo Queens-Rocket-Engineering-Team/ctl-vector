@@ -3,6 +3,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from vector.core.control import CoreControl
+from vector.core.sensor import CoreSensor
 from vector.qlcp.enums import ControlConfirmStatus, ControlState, PacketType
 from vector.runtime.command_tracker import (
     CommandRecord,
@@ -12,7 +14,6 @@ from vector.runtime.command_tracker import (
 
 
 if TYPE_CHECKING:
-    from vector.qlcp.config_models import ControlConfig, DeviceConfig, SensorConfig
     from vector.runtime.esp_connection_runtime import ESPDeviceSession
 
 
@@ -50,8 +51,8 @@ class RecordingSchema:
     reconnects mid-session keeps its columns.
     """
 
-    sensors: tuple[SensorConfig, ...]
-    controls: tuple[ControlConfig, ...]
+    sensors: tuple[CoreSensor, ...]
+    controls: tuple[CoreControl, ...]
     kasa: tuple[_KasaState, ...]
 
 
@@ -276,8 +277,8 @@ class SystemState:
         """
         devices = [self._devices_by_name[name] for name in sorted(self._devices_by_name)]
         return RecordingSchema(
-            sensors=tuple(sensor for device in devices for sensor in device.config.sensors_by_id.values()),
-            controls=tuple(control for device in devices for control in device.config.controls_by_id.values()),
+            sensors=tuple(sensor.to_core() for device in devices for sensor in device.config.sensors_by_id.values()),
+            controls=tuple(control.to_core() for device in devices for control in device.config.controls_by_id.values()),
             kasa=tuple(self._kasa_by_host[host] for host in sorted(self._kasa_by_host)),
         )
 
@@ -386,16 +387,16 @@ class SystemState:
             "name": config.name,
             "connected": device_state.connected,
             "address": device_state.address,
-            "sensors": [self._snapshot_sensor(sensor) for sensor in sorted(config.sensors_by_id.values(), key=lambda sensor: sensor.id)],
+            "sensors": [self._snapshot_sensor(sensor.to_core()) for sensor in sorted(config.sensors_by_id.values(), key=lambda sensor: sensor.id)],
             "controls": [
-                self._snapshot_control(device_state, control) for control in sorted(config.controls_by_id.values(), key=lambda control: control.id)
+                self._snapshot_control(device_state, control.to_core()) for control in sorted(config.controls_by_id.values(), key=lambda control: control.id)
             ],
             "last_sync_time": device.last_sync_time if device is not None else None,
             "heartbeat": self._snapshot_heartbeat(device_state),
         }
 
     @staticmethod
-    def _snapshot_sensor(sensor: SensorConfig) -> dict[str, Any]:
+    def _snapshot_sensor(sensor: CoreSensor) -> dict[str, Any]:
         return {
             "id": sensor.id,
             "name": sensor.name,
@@ -406,7 +407,7 @@ class SystemState:
     def _snapshot_control(
         self,
         device_state: _DeviceState,
-        control: ControlConfig,
+        control: CoreControl,
     ) -> dict[str, Any]:
         reported_state = device_state.reported_controls.get(control.id)
         accepted_state = device_state.accepted_controls.get(control.id)
@@ -417,7 +418,7 @@ class SystemState:
             "id": control.id,
             "name": control.name,
             "group": control.group,
-            "type": control.type.name,
+            "type": control.type,
             "unit": control.unit,
             "default_state": self._control_state_name(control.default),
             "reported_state": reported_state.state if reported_state is not None else None,

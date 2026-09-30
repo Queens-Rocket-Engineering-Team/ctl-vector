@@ -10,6 +10,19 @@ class SensorConfig:
     group: str
     unit: str
 
+    def to_core(self) -> "CoreSensor":
+        """Convert this QLCP sensor config to the transport-agnostic core representation."""
+        from vector.core.sensor import CoreSensor
+
+        return CoreSensor(
+            id=self.id,
+            name=self.name,
+            group=self.group,
+            unit=self.unit,
+            source="qlcp",
+        )
+
+
 @dataclass(slots=True, frozen=True, kw_only=True)
 class ControlConfig:
     id: int
@@ -18,6 +31,20 @@ class ControlConfig:
     default: ControlState | int | float
     type: ControlType
     unit: str | None
+
+    def to_core(self) -> "CoreControl":
+        """Convert this QLCP control config to the transport-agnostic core representation."""
+        from vector.core.control import CoreControl
+
+        return CoreControl(
+            id=self.id,
+            name=self.name,
+            group=self.group,
+            type=self.type.name,
+            default=self.default,
+            unit=self.unit,
+            source="qlcp",
+        )
 
 
 @dataclass(slots=True, frozen=True)
