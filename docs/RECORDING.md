@@ -54,7 +54,80 @@ Sessions are retained until removed externally. Listing them reports free disk s
 
 ## Cameras and MediaMTX
 
-[CameraRuntime](../src/vector/runtime/camera_runtime.py) connects to the cameras listed in YAML. The [camera driver](../src/vector/drivers/camera.py) uses ONVIF to obtain device information, set the camera clock, and issue pan/tilt commands. VECTOR registers an RTSP source with MediaMTX for each camera; MediaMTX pulls the video, relays it to viewers, and writes recordings. Live video does not pass through VECTOR's Python process.
+[CameraRuntime](../src/vector/runtime/camera_runtime.py) connects to cameras using ONVIF. The [camera driver](../src/vector/drivers/camera.py) uses ONVIF to obtain device information, set the camera clock, and issue pan/tilt commands. VECTOR registers an RTSP source with MediaMTX for each camera; MediaMTX pulls the video, relays it to viewers, and writes recordings. Live video does not pass through VECTOR's Python process.
+
+### ONVIF Camera Discovery
+
+Cameras can be discovered automatically on the local network using WS-Discovery (ONVIF device discovery). This eliminates the need for hardcoded IP addresses in the configuration.
+
+**Discovery behavior:**
+- At startup, if discovery is enabled, VECTOR sends WS-Discovery probes to find ONVIF devices (type `dn:NetworkVideoTransmitter`) on the local network.
+- Discovered cameras are combined with any manually configured cameras (see below). Manual cameras take precedence and can override discovered cameras or add cameras that don't respond to discovery.
+- If no cameras are found (neither discovered nor configured), a warning is logged and the server continues running without cameras.
+- Discovery runs once at startup; periodic rediscovery is not currently implemented.
+
+**Configuration (in `config.yaml` under `services.discovery`):**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Enable ONVIF camera discovery at startup. |
+| `onvif_port` | `2020` | Default ONVIF port used when the discovery response doesn't specify a port. |
+| `timeout` | `5.0` | Seconds to wait for discovery responses per attempt. |
+| `max_retries` | `3` | Number of discovery attempts before giving up. |
+
+**Manual camera overrides (in `config.yaml` under `cameras`):**
+
+The `cameras` list now serves as a manual override list. Each entry can specify:
+
+| Key | Required | Description |
+|-----|----------|-------------|
+| `ip` | No | Manual IP address. If provided, this camera is used as-is (bypassing discovery for this IP). |
+| `onvif_port` | No | ONVIF port for this camera (default: `services.discovery.onvif_port`). |
+
+If `ip` is omitted, the camera slot will be filled by a discovered camera (in order of discovery). If discovery is disabled, the `cameras` list is used as before (all entries must have `ip`).
+
+**Example configuration:**
+
+```yaml
+accounts:
+  camera:
+    username: propcam
+    password: propteambestteam
+
+services:
+  recordings:
+    root: ./recordings
+    mediamtx_container_root: /recordings
+  mediamtx:
+    ip: localhost
+    api_port: 9997
+  mumble:
+    ip: localhost
+    port: 64738
+    password: ""
+    temp_recording_dir: /tmp/mumble_recordings
+  discovery:
+    enabled: true
+    onvif_port: 2020
+    timeout: 5.0
+    max_retries: 3
+
+cameras:
+  # Manual override for a camera that doesn't respond to discovery
+  - ip: 192.168.0.105
+    onvif_port: 2020
+  # Additional cameras will be auto-discovered (no ip specified)
+  - onvif_port: 2020
+  - onvif_port: 2020
+```
+
+### Troubleshooting Discovery
+
+- **No cameras discovered:** Check that multicast traffic (UDP port 3702) is not blocked by a firewall. Ensure cameras are on the same subnet as the server.
+- **Cameras on different subnet:** WS-Discovery uses multicast which typically doesn't cross subnets. Add manual `ip` entries for cameras on other subnets.
+- **Duplicate cameras:** If the same camera responds multiple times (e.g., via multiple network interfaces), VECTOR deduplicates by IP address.
+- **Discovery timeout:** Increase `timeout` and `max_retries` in the discovery config for slow networks.
+- **Credentials:** All cameras (discovered and manual) use the credentials from `accounts.camera`. Ensure all cameras share the same username/password.
 
 HELM's [camera panel](https://github.com/Queens-Rocket-Engineering-Team/ctl-helm/blob/5ad1943c4b32c5b5fb1a8a9a2b2c53af0fd7c9a1/src/windows/camera_panel.vue) gets stream paths from `/v1/cameras`, then negotiates WebRTC directly with MediaMTX using WHEP on port `8889`. Camera controls still go through VECTOR. Loading video is opt-in, and leaving the panel closes its streams.
 

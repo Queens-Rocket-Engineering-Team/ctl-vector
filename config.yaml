@@ -17,11 +17,22 @@ services:
     port: 64738
     password: ""
     temp_recording_dir: /tmp/mumble_recordings
+  discovery:
+    # ONVIF camera discovery settings
+    enabled: true
+    # Default ONVIF port used when discovery response doesn't specify a port
+    onvif_port: 2020
+    # Seconds to wait for discovery responses per attempt
+    timeout: 5.0
+    # Number of discovery attempts before giving up
+    max_retries: 3
 
 cameras:
+  # Manual override for cameras that don't respond to discovery.
+  # If 'ip' is provided, this camera is used as-is (bypassing discovery for this IP).
+  # If 'ip' is omitted, the camera slot will be filled by a discovered camera (in order of discovery).
   - ip: 192.168.0.105
     onvif_port: 2020
-  - ip: 192.168.0.106
-    onvif_port: 2020
-  - ip: 192.168.0.107
-    onvif_port: 2020
+  # Additional cameras will be auto-discovered (no ip specified)
+  - onvif_port: 2020
+  - onvif_port: 2020

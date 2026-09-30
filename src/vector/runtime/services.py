@@ -151,6 +151,10 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
         cameras=config["cameras"],
         camera_account=config["accounts"]["camera"],
         recording_paths=recording_paths,
+        discovery_enabled=config["services"]["discovery"]["enabled"],
+        onvif_port=config["services"]["discovery"]["onvif_port"],
+        discovery_timeout=config["services"]["discovery"]["timeout"],
+        discovery_max_retries=config["services"]["discovery"]["max_retries"],
     )
     gui_watchdog = GUIWatchdog(state_stream=state_stream, esp_runtime=esp_runtime, metrics=metrics)
     kasa_runtime = KasaRuntime(system_state=system_state, state_stream=state_stream)

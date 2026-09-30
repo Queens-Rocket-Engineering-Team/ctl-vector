@@ -25,10 +25,19 @@ class RecordingsConfig(TypedDict):
     root: str
     mediamtx_container_root: str
 
+
+class DiscoveryConfig(TypedDict, total=False):
+    enabled: bool
+    onvif_port: int
+    timeout: float
+    max_retries: int
+
+
 class ServicesConfig(TypedDict):
     mediamtx: MediaMTXConfig
     mumble: MumbleConfig
     recordings: RecordingsConfig
+    discovery: DiscoveryConfig
 
 class ServerConfig(TypedDict):
     accounts: dict[str, AccountServiceConfig]
@@ -39,6 +48,13 @@ RECORDINGS_DEFAULTS: RecordingsConfig = {
     "root": "./recordings",
     # Must match the media service's bind mount in the compose files.
     "mediamtx_container_root": "/recordings",
+}
+
+DISCOVERY_DEFAULTS: DiscoveryConfig = {
+    "enabled": True,
+    "onvif_port": 2020,
+    "timeout": 5.0,
+    "max_retries": 3,
 }
 
 def load_config(config_path: str) -> ServerConfig:
@@ -58,4 +74,5 @@ def load_config(config_path: str) -> ServerConfig:
     config = cast("ServerConfig", loaded)
     services = config.setdefault("services", {})  # type: ignore[typeddict-item]
     services["recordings"] = {**RECORDINGS_DEFAULTS, **services.get("recordings", {})}
+    services["discovery"] = {**DISCOVERY_DEFAULTS, **services.get("discovery", {})}
     return config

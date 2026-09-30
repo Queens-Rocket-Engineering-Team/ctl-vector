@@ -46,6 +46,10 @@ class CameraRuntime:
         cameras: list[CameraConfig],
         camera_account: AccountServiceConfig,
         recording_paths: RecordingPaths,
+        discovery_enabled: bool = True,
+        onvif_port: int = 2020,
+        discovery_timeout: float = 5.0,
+        discovery_max_retries: int = 3,
     ) -> None:
         self._registry: dict[str, Camera] = {}
         self._mediamtx = mediamtx
@@ -54,6 +58,10 @@ class CameraRuntime:
         self._paths = recording_paths
         self._session_video_dir: PurePosixPath | None = None
         self._http_session: aiohttp.ClientSession | None = None
+        self._discovery_enabled = discovery_enabled
+        self._onvif_port = onvif_port
+        self._discovery_timeout = discovery_timeout
+        self._discovery_max_retries = discovery_max_retries
 
     def _get_http_session(self) -> aiohttp.ClientSession:
         if self._http_session is None or self._http_session.closed:
@@ -69,12 +77,64 @@ class CameraRuntime:
         return list(self._registry.values())
 
     async def connect_all_cameras(self) -> None:
-        """Connect to all configured cameras and register them, in parallel."""
+        """Connect to cameras and register them, in parallel.
+        If discovery is enabled, discover cameras on the network and use them.
+        Cameras listed in the configuration are treated as manual overrides and
+        are always included (they can override discovered cameras or add cameras
+        that do not respond to discovery).
+        """
+        from vector.runtime.camera_discovery import discover_onvif_cameras
+
         http_client = self._get_http_session()
         cam_username, cam_password = self._camera_credentials()
 
-        async def connect_one(camera: CameraConfig) -> None:
-            camera_object = await self.register_camera(camera["ip"], camera["onvif_port"])
+        # Determine the list of cameras to connect to
+        cameras_to_connect: list[dict] = []
+
+        # Start with configured cameras (from config)
+        configured_cameras = self._cameras  # This is the list from config
+
+        if self._discovery_enabled:
+            # Discover cameras
+            logger.info("Starting ONVIF camera discovery...")
+            discovered = discover_onvif_cameras(
+                timeout=self._discovery_timeout,
+                max_retries=self._discovery_max_retries,
+            )
+            # Convert discovered to the same format as configured cameras (list of dict with ip and onvif_port)
+            discovered_cameras = [
+                {'ip': cam['ip'], 'onvif_port': cam['onvif_port']}
+                for cam in discovered
+            ]
+
+            # Build a set of configured IPs for quick lookup
+            configured_ips = {cam['ip'] for cam in configured_cameras}
+
+            # Add all configured cameras (these are manual overrides)
+            cameras_to_connect.extend(configured_cameras)
+
+            # Add discovered cameras that are not in the configured list
+            for cam in discovered_cameras:
+                if cam['ip'] not in configured_ips:
+                    cameras_to_connect.append(cam)
+
+            logger.info(
+                "Camera connection list: %d configured (%d discovered, %d manual overrides)",
+                len(cameras_to_connect),
+                len(discovered_cameras),
+                len(configured_cameras),
+            )
+        else:
+            # Discovery disabled: just use the configured cameras
+            cameras_to_connect = configured_cameras
+            logger.info("Discovery disabled, using %d configured cameras", len(cameras_to_connect))
+
+        if not cameras_to_connect:
+            logger.warning("No cameras to connect to (discovery found none and no configured cameras)")
+            return
+
+        async def connect_one(camera_config: dict) -> None:
+            camera_object = await self.register_camera(camera_config["ip"], camera_config["onvif_port"])
             if camera_object is None:
                 return
             await self._configure_media_server_for_camera(
@@ -84,7 +144,7 @@ class CameraRuntime:
                 password=cam_password,
             )
 
-        await asyncio.gather(*(connect_one(camera) for camera in self._cameras))
+        await asyncio.gather(*(connect_one(camera) for camera in cameras_to_connect))
 
     async def register_camera(self, ip: str, port: int) -> Camera | None:
         """Register a camera with its IP and ONVIF port."""
