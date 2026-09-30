@@ -1,7 +1,7 @@
 services:
   server:
     # Pull latest image from GitHub
-    image: ghcr.io/queens-rocket-engineering-team/prop-teststand-server:${IMAGE_TAG:-latest}
+    image: ghcr.io/queens-rocket-engineering-team/ctl-vector:${IMAGE_TAG:-latest}
     network_mode: "host"  # Use host networking for SSDP
     # Write session directories as the invoking user so they stay deletable, and so a
     # local `uv run` can read what the container wrote.
@@ -68,7 +68,7 @@ services:
   # prints a (non-blocking) warning if it hasn't changed since the previous
   # release, as a nudge to double check it.
   gui:
-    image: ghcr.io/queens-rocket-engineering-team/prop-new-control-gui-web:${GUI_TAG:-v1.0.0}
+    image: ghcr.io/queens-rocket-engineering-team/ctl-helm:${GUI_TAG:-v1.0.0}
     network_mode: "host" # Matches the server service; nginx listens on 8080
 
     environment:
