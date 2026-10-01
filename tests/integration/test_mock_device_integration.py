@@ -15,12 +15,13 @@ import contextlib
 import socket
 from typing import TYPE_CHECKING, Any
 
+from tests.mock_device import MockSensorDevice
+from vector.core import Core, TelemetryBatch
 from vector.qlcp.enums import ControlState, PacketType
 from vector.runtime.command_tracker import CommandLifecycle, CommandTracker
 from vector.runtime.esp_connection_runtime import ESPConnectionRuntime, ESPDeviceSession
-from vector.runtime.telemetry_ingest import TelemetryBatch, TelemetryRuntime
+from vector.runtime.telemetry_ingest import TelemetryRuntime
 from vector.state.system_state import SystemState
-from tests.mock_device import MockSensorDevice
 
 
 if TYPE_CHECKING:
@@ -80,8 +81,9 @@ async def _runtime_harness() -> AsyncGenerator[
     udp_port = _free_udp_port()
 
     tracker = CommandTracker()
-    state = SystemState(command_tracker=tracker)
+    state = SystemState(core=Core())
     stream = _FakeStateStream()
+    state.set_publisher(stream.publish)
     runtime = ESPConnectionRuntime(
         command_tracker=tracker,
         system_state=state,
@@ -89,7 +91,8 @@ async def _runtime_harness() -> AsyncGenerator[
     )
 
     publisher = _CollectingPublisher()
-    telemetry_runtime = TelemetryRuntime(runtime.get_device_by_address, publisher, tare_for=state.tare_for)
+    telemetry_runtime = TelemetryRuntime(runtime.get_device_by_address)
+    state.core.subscribe_samples(publisher.publish_batch)
 
     tasks = [
         asyncio.create_task(runtime.run_tcp_listener(port=tcp_port)),
@@ -428,7 +431,7 @@ def test_tare_set_mid_stream_offsets_readings_without_losing_the_raw_value() -> 
 
     async def run() -> None:
         async with (
-            _runtime_harness() as (runtime, _tracker, state, publisher, telemetry_runtime, tcp_port, udp_port),
+            _runtime_harness() as (runtime, _tracker, state, publisher, _telemetry_runtime, tcp_port, udp_port),
             MockSensorDevice(
                 server_ip="127.0.0.1",
                 server_port=tcp_port,
@@ -448,10 +451,10 @@ def test_tare_set_mid_stream_offsets_readings_without_losing_the_raw_value() -> 
             before = publisher.batches[-1]
             assert _reading_for(before, "PT101").tare == 0.0
 
-            offset, sampled_device, count = telemetry_runtime.capture_tare_offset("PT101", samples=1)
+            offset, sampled_device, count = state.core.capture_tare_offset("PT101", samples=1)
             assert sampled_device == dev.device_name
             assert count == 1
-            state.set_tare("PT101", offset)
+            state.core.set_tare("PT101", offset)
 
             tared_at = len(publisher.batches)
             reached = await _wait_for(lambda: len(publisher.batches) > tared_at, timeout_s=2.0)
@@ -469,7 +472,7 @@ def test_tare_set_mid_stream_offsets_readings_without_losing_the_raw_value() -> 
             # Other sensors are untouched: tares are per sensor name.
             assert _reading_for(after, "TC101").tare == 0.0
 
-            state.clear_tare("PT101")
+            state.core.clear_tare("PT101")
             cleared_at = len(publisher.batches)
             reached = await _wait_for(lambda: len(publisher.batches) > cleared_at, timeout_s=2.0)
             assert reached, "No batches arrived after the tare was cleared"

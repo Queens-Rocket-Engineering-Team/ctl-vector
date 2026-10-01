@@ -20,7 +20,7 @@ The [firmware packet handler](https://github.com/Queens-Rocket-Engineering-Team/
 
 Safe states are specific to the plumbing and electrical design. A vent may need to open while a feed valve closes. Each node's CONFIG supplies `default_state` for its controls, and VECTOR exposes those values to clients. ESTOP asks the node to restore them; VECTOR does not calculate a safe valve configuration from sensor readings. It has no global armed-state or interlock model. See [PANDA's power architecture](https://github.com/Queens-Rocket-Engineering-Team/ctl-panda/blob/ce662421b9694f965393419c044766101c4ff2f3/README.md#power-architecture) for an example of the hardware safety boundary.
 
-Control algorithms also stay local where needed. For example, the [GSE heater task](https://github.com/Queens-Rocket-Engineering-Team/ctl-node-firmware/blob/58786c6d79764e23c3087b8c2cc9cc35f549a270/boards/gse_node/heater_control.c) reads temperatures and drives heater power from a PID setpoint. VECTOR transports the setpoint and readings; the heater loop runs on the node. Older Kasa outlets have a separate control path and are not affected by QLCP ESTOP.
+Control algorithms also stay local where needed. For example, the [GSE heater task](https://github.com/Queens-Rocket-Engineering-Team/ctl-node-firmware/blob/58786c6d79764e23c3087b8c2cc9cc35f549a270/boards/gse_node/heater_control.c) reads temperatures and drives heater power from a PID setpoint. VECTOR transports the setpoint and readings; the heater loop runs on the node. Older Kasa outlets are commanded through the same [core](CORE.md) dispatch as QLCP CONTROL, but they are not QLCP devices and are not affected by QLCP ESTOP.
 
 ## The GUI watchdog
 

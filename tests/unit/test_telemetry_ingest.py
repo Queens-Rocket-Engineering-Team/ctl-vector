@@ -1,19 +1,14 @@
-from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from vector.core import TARE_SAMPLE_MAX_AGE_S, Core, SensorDefinition, TareCaptureError, TelemetryReading
 from vector.qlcp.config_parser import parse_config
 from vector.qlcp.packets import AckPacket, DataPacket, HeartbeatPacket, PacketHeader, SensorReading
 from vector.runtime.esp_connection_runtime import ESPDeviceSession
 from vector.runtime.metrics import Metrics
-from vector.runtime.telemetry_ingest import (
-    TARE_SAMPLE_MAX_AGE_S,
-    TareCaptureError,
-    TelemetryReading,
-    TelemetryRuntime,
-)
+from vector.runtime.telemetry_ingest import TelemetryRuntime
 
 
 def _metrics_snapshot(metrics: Metrics) -> dict[str, Any]:
@@ -60,13 +55,17 @@ def _make_session(
     return cast("ESPDeviceSession", session)
 
 
-def _tare_lookup(tares: dict[str, float]) -> Callable[[str], float]:
-    """Stand-in for SystemState.tare_for: 0.0 for sensors with no tare set."""
-
-    def tare_for(sensor_name: str) -> float:
-        return tares.get(sensor_name, 0.0)
-
-    return tare_for
+def _make_ingest(*sessions: ESPDeviceSession, metrics: Metrics | None = None) -> tuple[TelemetryRuntime, Core]:
+    core = Core()
+    for session in sessions:
+        session.core_source = core.register_source(
+            "qlcp", session.name, address=session.address, connection_key=session.connection_key,
+            sensors=tuple(
+                SensorDefinition(sensor.name, sensor.group, sensor.unit)
+                for sensor in session.qlcp_config.sensors_by_id.values()
+            ),
+        )
+    return TelemetryRuntime({session.address: session for session in sessions}.get, metrics=metrics), core
 
 
 def _data_packet(*readings: tuple[int, float], sequence: int = 1) -> DataPacket:
@@ -78,8 +77,7 @@ def _data_packet(*readings: tuple[int, float], sequence: int = 1) -> DataPacket:
 
 def test_data_packet_from_registered_session_produces_batch() -> None:
     session = _make_session()
-    devices: dict[str, ESPDeviceSession] = {session.address: session}
-    ingest = TelemetryRuntime(devices.get)
+    ingest, _core = _make_ingest(session)
     packet = DataPacket(
         header=PacketHeader(
             sequence=1,
@@ -124,8 +122,7 @@ def test_data_packet_from_registered_session_produces_batch() -> None:
 
 def test_unsynced_session_uses_monotonic_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _make_session(last_sync_time=None)
-    devices: dict[str, ESPDeviceSession] = {session.address: session}
-    ingest = TelemetryRuntime(devices.get)
+    ingest, _core = _make_ingest(session)
     monkeypatch.setattr("vector.runtime.telemetry_ingest.time.monotonic", lambda: 42.25)
     packet = DataPacket(
         header=PacketHeader(
@@ -147,7 +144,7 @@ def test_unknown_device_address_is_logged_and_ignored(monkeypatch: pytest.Monkey
     errors: list[str] = []
     monkeypatch.setattr("vector.runtime.telemetry_ingest.logger.error", lambda msg, *args, **kwargs: errors.append(msg % args if args else msg))
     metrics = Metrics(time_fn=lambda: 100.0)
-    ingest = TelemetryRuntime({}.get, metrics=metrics)  # type: ignore[arg-type]
+    ingest, _core = _make_ingest(metrics=metrics)
 
     batch = ingest.handle_datagram(b"not decoded", "10.0.0.99")
 
@@ -160,10 +157,9 @@ def test_unknown_device_address_is_logged_and_ignored(monkeypatch: pytest.Monkey
 
 def test_decode_error_records_metric(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _make_session()
-    devices: dict[str, ESPDeviceSession] = {session.address: session}
     metrics = Metrics(time_fn=lambda: 100.0)
     monkeypatch.setattr("vector.runtime.telemetry_ingest.logger.error", lambda *_args, **_kwargs: None)
-    ingest = TelemetryRuntime(devices.get, metrics=metrics)
+    ingest, _core = _make_ingest(session, metrics=metrics)
 
     batch = ingest.handle_datagram(b"not decoded", session.address)
 
@@ -175,9 +171,8 @@ def test_decode_error_records_metric(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_data_packets_record_throughput_without_packet_loss_estimate() -> None:
     session = _make_session()
-    devices: dict[str, ESPDeviceSession] = {session.address: session}
     metrics = Metrics(time_fn=lambda: 100.0)
-    ingest = TelemetryRuntime(devices.get, metrics=metrics)
+    ingest, _core = _make_ingest(session, metrics=metrics)
     readings = [SensorReading(sensor_id=0, value=1.0)]
 
     ingest.handle_packet(DataPacket(header=PacketHeader(sequence=254, timestamp_us=12345), readings=readings), session)
@@ -192,10 +187,9 @@ def test_data_packets_record_throughput_without_packet_loss_estimate() -> None:
 
 def test_non_data_packet_is_logged_and_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _make_session()
-    devices: dict[str, ESPDeviceSession] = {session.address: session}
     errors: list[str] = []
     monkeypatch.setattr("vector.runtime.telemetry_ingest.logger.error", lambda msg, *args, **kwargs: errors.append(msg % args if args else msg))
-    ingest = TelemetryRuntime(devices.get)
+    ingest, _core = _make_ingest(session)
     packet = AckPacket.create(HeartbeatPacket(header=PacketHeader(sequence=4, timestamp_us=0)))
 
     batch = ingest.handle_datagram(packet.encode(), session.address)
@@ -206,10 +200,9 @@ def test_non_data_packet_is_logged_and_ignored(monkeypatch: pytest.MonkeyPatch) 
 
 def test_unknown_sensor_id_is_logged_and_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _make_session()
-    devices: dict[str, ESPDeviceSession] = {session.address: session}
     errors: list[str] = []
     monkeypatch.setattr("vector.runtime.telemetry_ingest.logger.error", lambda msg, *args, **kwargs: errors.append(msg % args if args else msg))
-    ingest = TelemetryRuntime(devices.get)
+    ingest, _core = _make_ingest(session)
     packet = DataPacket(
         header=PacketHeader(
             sequence=1,
@@ -227,7 +220,8 @@ def test_unknown_sensor_id_is_logged_and_dropped(monkeypatch: pytest.MonkeyPatch
 
 def test_tare_is_subtracted_and_reported_per_reading() -> None:
     session = _make_session()
-    ingest = TelemetryRuntime({session.address: session}.get, tare_for=_tare_lookup({"TC1": 10.0}))
+    ingest, core = _make_ingest(session)
+    core.set_tare("TC1", 10.0)
 
     batch = ingest.handle_packet(_data_packet((0, 12.5), (1, 30.0)), session)
 
@@ -240,11 +234,11 @@ def test_tare_is_subtracted_and_reported_per_reading() -> None:
 
 def test_capture_tare_offset_averages_recent_raw_readings() -> None:
     session = _make_session()
-    ingest = TelemetryRuntime({session.address: session}.get)
+    ingest, core = _make_ingest(session)
     for value in (1.0, 2.0, 3.0, 100.0):
         ingest.handle_packet(_data_packet((0, value)), session)
 
-    offset, device_name, count = ingest.capture_tare_offset("TC1", samples=3)
+    offset, device_name, count = core.capture_tare_offset("TC1", samples=3)
 
     assert offset == pytest.approx(35.0)  # mean of the last three, not all four
     assert device_name == "PANDA"
@@ -254,21 +248,22 @@ def test_capture_tare_offset_averages_recent_raw_readings() -> None:
 def test_capture_tare_offset_samples_raw_values_not_tared_ones() -> None:
     """A second tare must recompute an absolute offset rather than compound onto the first."""
     session = _make_session()
-    ingest = TelemetryRuntime({session.address: session}.get, tare_for=_tare_lookup({"TC1": 10.0}))
+    ingest, core = _make_ingest(session)
+    core.set_tare("TC1", 10.0)
     for value in (20.0, 22.0):
         ingest.handle_packet(_data_packet((0, value)), session)
 
-    offset, _device_name, _count = ingest.capture_tare_offset("TC1", samples=2)
+    offset, _device_name, _count = core.capture_tare_offset("TC1", samples=2)
 
     assert offset == pytest.approx(21.0)
 
 
 def test_capture_tare_offset_uses_every_available_sample_when_fewer_than_requested() -> None:
     session = _make_session()
-    ingest = TelemetryRuntime({session.address: session}.get)
+    ingest, core = _make_ingest(session)
     ingest.handle_packet(_data_packet((0, 4.0)), session)
 
-    offset, _device_name, count = ingest.capture_tare_offset("TC1", samples=64)
+    offset, _device_name, count = core.capture_tare_offset("TC1", samples=64)
 
     assert offset == pytest.approx(4.0)
     assert count == 1
@@ -276,40 +271,35 @@ def test_capture_tare_offset_uses_every_available_sample_when_fewer_than_request
 
 def test_capture_tare_offset_without_samples_raises() -> None:
     session = _make_session()
-    ingest = TelemetryRuntime({session.address: session}.get)
+    _ingest, core = _make_ingest(session)
 
-    with pytest.raises(TareCaptureError) as excinfo:
-        ingest.capture_tare_offset("TC1")
-
-    assert excinfo.value.candidates == ()
-    assert "No telemetry received" in str(excinfo.value)
+    with pytest.raises(TareCaptureError, match="No telemetry received"):
+        core.capture_tare_offset("TC1")
 
 
 def test_capture_tare_offset_ignores_stale_samples(monkeypatch: pytest.MonkeyPatch) -> None:
     """A disconnected device's last readings must never be used to capture a tare."""
     session = _make_session()
-    ingest = TelemetryRuntime({session.address: session}.get)
+    ingest, core = _make_ingest(session)
     monkeypatch.setattr("vector.runtime.telemetry_ingest.time.monotonic", lambda: 100.0)
     ingest.handle_packet(_data_packet((0, 4.0)), session)
 
     monkeypatch.setattr("vector.runtime.telemetry_ingest.time.monotonic", lambda: 100.0 + TARE_SAMPLE_MAX_AGE_S + 0.1)
     with pytest.raises(TareCaptureError):
-        ingest.capture_tare_offset("TC1")
+        core.capture_tare_offset("TC1")
 
 
 def test_capture_tare_offset_reports_candidates_when_name_is_ambiguous() -> None:
     """Two devices carrying the same sensor name is the flight handoff case."""
     ground = _make_session(address="10.0.0.2", device_name="GROUND")
     flight = _make_session(address="10.0.0.3", device_name="FLIGHT", connection_key="conn-b")
-    ingest = TelemetryRuntime({ground.address: ground, flight.address: flight}.get)
+    ingest, core = _make_ingest(ground, flight)
     ingest.handle_packet(_data_packet((0, 4.0)), ground)
     ingest.handle_packet(_data_packet((0, 90.0)), flight)
 
-    with pytest.raises(TareCaptureError) as excinfo:
-        ingest.capture_tare_offset("TC1")
+    with pytest.raises(TareCaptureError, match=r"\(FLIGHT, GROUND\)"):
+        core.capture_tare_offset("TC1")
 
-    assert excinfo.value.candidates == ("FLIGHT", "GROUND")
-
-    offset, device_name, _count = ingest.capture_tare_offset("TC1", device_name="FLIGHT")
+    offset, device_name, _count = core.capture_tare_offset("TC1", device_name="FLIGHT")
     assert offset == pytest.approx(90.0)
     assert device_name == "FLIGHT"

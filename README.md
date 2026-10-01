@@ -31,6 +31,7 @@ Start with [ARCHITECTURE.md](ARCHITECTURE.md) for the deployment diagram, code m
 
 | Subsystem | Reference |
 |---|---|
+| Shared core | [Resource definitions, provider interface, reading and command walkthroughs](docs/CORE.md) |
 | Nodes and commands | [Discovery, connection lifetime, response tracking](docs/NODES.md) |
 | Telemetry | [Ingest, timestamps, taring, display downsampling](docs/TELEMETRY.md) |
 | HELM and other clients | [REST, WebSocket state, client capabilities](docs/CLIENTS.md) |

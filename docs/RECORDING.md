@@ -44,9 +44,9 @@ recordings/
     video/...
 ```
 
-The [CSV writer](../src/vector/runtime/session_telemetry.py) writes one row per telemetry batch, with a device source and timestamp. Sensor columns are keyed by name. It samples the latest reported control and Kasa states into each row; this is not an event-by-event command log.
+The [CSV writer](../src/vector/runtime/session_telemetry.py) writes one row per telemetry batch, with a source label and timestamp. Sensor columns are keyed by name. It samples the latest reported control and Kasa states into each row; this is not an event-by-event command log. The final `source_provider` and `source_key` columns identify the producer even when labels repeat or change. These columns are appended so existing column positions stay the same; parse CSV by header and honor quoted fields.
 
-Columns remain fixed once rows have been written. `SystemState` retains disconnected device descriptions, so an ordinary reconnect can reuse the original columns. If a batch introduces sensor names absent from that layout, its device gets a `telemetry_late*.csv` side file. Before the first row, the writer can instead rebuild the header. These rules preserve readings without rewriting an existing recording.
+Columns remain fixed once rows have been written. The core retains disconnected source descriptions and `SystemState` presents their recording schema, so an ordinary reconnect can reuse the original columns. If a batch introduces sensor names absent from that layout, its source gets a `telemetry_late*.csv` side file. Late files are grouped by provider/key and reused only if their columns cover the batch; a reconnect that adds sensors can create another file. Every file stays in the session archive. Before the first row, the writer can instead rebuild the header. These rules preserve readings without rewriting an existing recording.
 
 Writes use a large buffer, flushed roughly once a second; closing also calls `fsync`. That reduces per-batch overhead on the shared event loop. Filesystem stalls can still affect ingest, and periodic flushing is not a guarantee against power-loss data loss.
 

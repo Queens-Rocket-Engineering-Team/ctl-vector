@@ -7,20 +7,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from vector.config import MumbleConfig
+from vector.core import Core
 from vector.runtime.audio_runtime import AudioRuntime
 from vector.runtime.camera_runtime import CameraRuntime
-from vector.runtime.command_tracker import CommandTracker
 from vector.runtime.kasa_runtime import KasaRuntime
 from vector.runtime.recording_paths import RecordingPaths
-from vector.runtime.state_stream import StateStream
-from vector.state.system_state import SystemState
 
 
 def _make_kasa_runtime() -> KasaRuntime:
-    tracker = CommandTracker()
-    system_state = SystemState(command_tracker=tracker)
-    state_stream = StateStream(system_state)
-    return KasaRuntime(system_state=system_state, state_stream=state_stream)
+    return KasaRuntime(core=Core())
 
 
 # ---------------------------------------------------------------------------

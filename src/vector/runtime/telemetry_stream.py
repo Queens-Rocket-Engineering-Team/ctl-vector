@@ -6,7 +6,7 @@ from vector.runtime.ws_fanout import BoundedWebSocketFanout
 
 
 if TYPE_CHECKING:
-    from vector.runtime.telemetry_ingest import TelemetryBatch
+    from vector.core import TelemetryBatch
 
 
 STREAM_METRIC_LABEL = "telemetry_raw"
@@ -31,6 +31,8 @@ class TelemetryStreamRuntime(BoundedWebSocketFanout):
     def serialize_batch(self, batch: TelemetryBatch) -> dict[str, Any]:
         return {
             "type": "telemetry.raw_batch",
+            "source_provider": batch.source_provider,
+            "source_key": batch.source_key,
             "device_name": batch.device_name,
             "device_address": batch.device_address,
             "connection_key": batch.connection_key,

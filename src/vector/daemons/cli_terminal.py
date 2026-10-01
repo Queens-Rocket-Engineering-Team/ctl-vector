@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import aioconsole
 
-from vector.runtime.telemetry_ingest import (
+from vector.core import (
     TARE_DEFAULT_SAMPLES,
     TARE_SAMPLE_CAPACITY,
     TareCaptureError,
@@ -56,7 +56,7 @@ DEVICE_COMMANDS = [
 async def _handle_tare_command(runtime: RuntimeServices, args: list) -> None:
     """Handle `tare`, `tare <sensor> [samples]`, and `tare <sensor> clear`."""
     if not args:
-        tares = runtime.system_state.tares()
+        tares = runtime.core.tares()
         if not tares:
             logger.info("No sensors are tared.")
             logger.info("  Try: tare <sensor_name>")
@@ -69,11 +69,9 @@ async def _handle_tare_command(runtime: RuntimeServices, args: list) -> None:
     sensor_name = args[0]
 
     if len(args) > 1 and args[1].lower() in ("clear", "reset", "off"):
-        event = runtime.system_state.clear_tare(sensor_name)
-        if event is None:
+        if not runtime.core.clear_tare(sensor_name):
             logger.info(f"Sensor '{sensor_name}' is not tared")
             return
-        runtime.state_stream.publish(event)
         logger.info(f"Cleared tare for '{sensor_name}'")
         return
 
@@ -89,12 +87,12 @@ async def _handle_tare_command(runtime: RuntimeServices, args: list) -> None:
             return
 
     try:
-        offset, device_name, count = runtime.telemetry_runtime.capture_tare_offset(sensor_name, samples=samples)
+        offset, device_name, count = runtime.core.capture_tare_offset(sensor_name, samples=samples)
     except TareCaptureError as exc:
         logger.info(str(exc))
         return
 
-    runtime.state_stream.publish(runtime.system_state.set_tare(sensor_name, offset))
+    runtime.core.set_tare(sensor_name, offset)
     logger.info(f"Tared '{sensor_name}' to {offset} from {count} readings on {device_name}")
 
 
