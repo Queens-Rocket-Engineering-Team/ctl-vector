@@ -48,6 +48,7 @@ def _make_device(
         qlcp_config=config,
         last_sync_time=None,
         missed_heartbeat_count=heartbeat_misses,
+        core_source=None,
     )
 
 
@@ -57,7 +58,7 @@ def _make_state() -> tuple[SystemState, CommandTracker, QLCPStateAdapter, list[S
     state = SystemState(core=core)
     events: list[StateEvent] = []
     state.set_publisher(events.append)
-    return state, tracker, QLCPStateAdapter(core, state, tracker), events
+    return state, tracker, QLCPStateAdapter(state, tracker), events
 
 
 def _register_kasa(core: Core, host: str, alias: str, model: str, active: bool) -> Source:
@@ -711,14 +712,8 @@ def test_set_tare_emits_versioned_event_and_appears_in_snapshot() -> None:
     event = events[-1] if events else None
 
     assert event == {"type": "tare.updated", "state_version": 1, "sensor_name": "PT101", "offset": 14.7}
-    assert state.core.tare_for("PT101") == 14.7
+    assert state.core.tares().get("PT101", 0.0) == 14.7
     assert state.snapshot()["tares"] == {"PT101": 14.7}
-
-
-def test_tare_for_defaults_to_zero() -> None:
-    state, _, _qlcp, _events = _make_state()
-
-    assert state.core.tare_for("PT101") == 0.0
 
 
 def test_set_tare_replaces_the_previous_offset() -> None:
@@ -727,7 +722,7 @@ def test_set_tare_replaces_the_previous_offset() -> None:
     state.core.set_tare("PT101", 14.7)
     state.core.set_tare("PT101", 3.2)
 
-    assert state.core.tare_for("PT101") == 3.2
+    assert state.core.tares().get("PT101", 0.0) == 3.2
     assert state.state_version == 2
 
 
@@ -739,7 +734,7 @@ def test_clear_tare_emits_event_and_removes_the_offset() -> None:
     event = events[-1] if events else None
 
     assert event == {"type": "tare.cleared", "state_version": 2, "sensor_name": "PT101"}
-    assert state.core.tare_for("PT101") == 0.0
+    assert state.core.tares().get("PT101", 0.0) == 0.0
     assert state.snapshot()["tares"] == {}
 
 
@@ -759,7 +754,7 @@ def test_tares_survive_device_disconnect() -> None:
 
     qlcp.mark_disconnected(device)
 
-    assert state.core.tare_for("TC1") == 5.0
+    assert state.core.tares().get("TC1", 0.0) == 5.0
 
 
 def test_snapshot_includes_tares_key_even_when_empty() -> None:

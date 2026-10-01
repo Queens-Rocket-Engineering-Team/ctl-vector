@@ -1,12 +1,12 @@
 """The existing GUI and recording views of the shared resource core.
 
-The core owns definitions, readings, control observations, and tares. This module
+The core owns definitions, control observations, and tares. This module
 only gives those objects their established REST/WebSocket and recording shapes.
 Transport diagnostics are supplied as read-only scalar views by their adapters.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 
@@ -197,15 +197,7 @@ class SystemState:
         )
 
     def _snapshot_kasa(self, source: Source) -> dict[str, Any]:
-        state = self._kasa_state(source)
-        return {
-            **source_identity(source),
-            "host": state.host,
-            "alias": state.alias,
-            "model": state.model,
-            "active": state.active,
-            "connected": state.connected,
-        }
+        return {**source_identity(source), **asdict(self._kasa_state(source))}
 
     def _snapshot_device(self, source: Source) -> dict[str, Any]:
         last_sync_time, _ = self._health(source)

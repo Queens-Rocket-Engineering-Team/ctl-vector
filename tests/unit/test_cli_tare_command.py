@@ -37,7 +37,7 @@ def test_tare_captures_an_offset_and_publishes_it() -> None:
 
     _run(runtime, "PT101")
 
-    assert system_state.core.tare_for("PT101") == 15.0
+    assert system_state.core.tares().get("PT101", 0.0) == 15.0
     assert published == [{"type": "tare.updated", "state_version": 1, "sensor_name": "PT101", "offset": 15.0}]
 
 
@@ -56,7 +56,7 @@ def test_tare_clear_removes_the_offset() -> None:
 
     _run(runtime, "PT101", "clear")
 
-    assert system_state.core.tare_for("PT101") == 0.0
+    assert system_state.core.tares().get("PT101", 0.0) == 0.0
     assert published == [{"type": "tare.cleared", "state_version": 2, "sensor_name": "PT101"}]
 
 
@@ -76,7 +76,7 @@ def test_tare_capture_failure_leaves_state_untouched() -> None:
 
     _run(runtime, "PT101")
 
-    assert system_state.core.tare_for("PT101") == 0.0
+    assert system_state.core.tares().get("PT101", 0.0) == 0.0
     assert published == []
 
 
@@ -102,7 +102,7 @@ def test_tare_rejects_non_finite_capture_and_accepts_next_valid_command(values: 
     async def run() -> None:
         await handle_server_command(runtime, "TARE", ["PT101"])
 
-        assert core.tare_for("PT101") == 15.0
+        assert core.tares().get("PT101", 0.0) == 15.0
         assert system_state.state_version == version
         assert published == []
 
@@ -111,7 +111,7 @@ def test_tare_rejects_non_finite_capture_and_accepts_next_valid_command(values: 
 
     asyncio.run(run())
 
-    assert core.tare_for("PT101") == 9.0
+    assert core.tares().get("PT101", 0.0) == 9.0
     assert published == [{"type": "tare.updated", "state_version": version + 1, "sensor_name": "PT101", "offset": 9.0}]
 
 

@@ -36,15 +36,15 @@ def guarded_import(name, *args, **kwargs):
     return original_import(name, *args, **kwargs)
 builtins.__import__ = guarded_import
 
-from vector.core import Core, SensorDefinition, ControlDefinition
+from vector.core import Core, DispatchResult, SensorDefinition, ControlDefinition
 async def write(target, value):
-    return True
+    return DispatchResult(True)
 core = Core()
 source = core.register_source('test', 'source', sensors=[SensorDefinition('pressure')],
                               controls=[ControlDefinition('valve')], control_handler=write)
 source.publish_samples([('pressure', 12.0)], 1.0)
 assert core.capture_tare('pressure') == (12.0, 'source', 1)
-assert asyncio.run(core.set_control(source.controls, True))[0].submitted
+assert asyncio.run(core.set_control(source.controls[0], True)).submitted
 """
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)  # noqa: S603
 
@@ -78,13 +78,14 @@ def test_duplicate_declarations_keep_independent_ordinal_readings_and_reports() 
         sensors=[SensorDefinition("PT101", "pressure", "psi"), SensorDefinition("PT101", "backup", "kPa")],
         controls=[ControlDefinition("AV101", "valve"), ControlDefinition("AV101", "relay")],
     )
-    source.publish_samples([(source.sensors[0], 1.0), (source.sensors[1], 2.0)], 1.0)
+    first = source.publish_samples([(source.sensors[0], 1.0), (source.sensors[1], 2.0)], 1.0)
     source.report_control(source.controls[0], False)
     source.report_control(source.controls[1], True)
     source.accept_control(source.controls[0], True)
 
-    assert [sample.reading.sensor_id for sample in core.latest_samples("PT101")] == [0, 1]
-    assert [sample.reading.unit_name for sample in core.latest_samples("PT101")] == ["psi", "kPa"]
+    assert first is not None
+    assert [reading.sensor_id for reading in first.readings] == [0, 1]
+    assert [reading.unit_name for reading in first.readings] == ["psi", "kPa"]
     assert source.controls[0].reported.value is False
     assert source.controls[1].reported.value is True
     assert source.controls[0].accepted.value is True
@@ -103,17 +104,12 @@ def test_tare_uses_raw_history_and_only_changes_subsequent_samples() -> None:
     core.subscribe_samples(published.append)
     for value in (-61.0, -62.0, -63.0):
         source.publish_samples([("RSSI", value)], 100.0)
-    before = core.latest_samples("RSSI")[0]
 
     assert core.capture_tare("RSSI", samples=2) == (-62.5, "antenna", 2)
-    assert core.latest_samples("RSSI")[0] is before
-    assert before.reading.value == -63.0
     batch = source.publish_samples([("RSSI", -60.0)], 101.0)
     assert batch is not None
     assert (batch.readings[0].value, batch.readings[0].tare) == (2.5, -62.5)
     assert core.capture_tare_offset("RSSI", samples=2) == (-61.5, "antenna", 2)
-    assert core.latest_samples("RSSI")[0].reading is batch.readings[0]
-    assert core.latest_samples("RSSI")[0].timestamp_s == 101.0
     assert published[-1] is batch
     assert len(published) == 4
 
@@ -129,7 +125,7 @@ def test_tare_is_shared_by_exact_name_and_capture_requires_a_source_if_ambiguous
         core.capture_tare("PT101")
     assert exc.value.candidates == ("FLIGHT", "GROUND")
     assert core.capture_tare("PT101", device_name="GROUND") == (5.0, "GROUND", 1)
-    assert core.tare_for("pt101") == 0
+    assert core.tares().get("pt101", 0.0) == 0
     batch = flight.publish_samples([("PT101", 50.0)], 2.0)
     assert batch is not None
     assert batch.readings[0].value == 45.0
@@ -144,7 +140,7 @@ def test_nonfinite_tares_do_not_replace_existing_offset(offset: float) -> None:
     core.set_tare("PT101", 10.0)
     with pytest.raises(ValueError, match="finite"):
         core.set_tare("PT101", offset)
-    assert core.tare_for("PT101") == 10.0
+    assert core.tares().get("PT101", 0.0) == 10.0
 
 
 @pytest.mark.parametrize(
@@ -165,7 +161,7 @@ def test_nonfinite_capture_rejects_without_changing_existing_tare(values: tuple[
     with pytest.raises(TareCaptureError):
         core.capture_tare("PT101")
 
-    assert core.tare_for("PT101") == 10.0
+    assert core.tares().get("PT101", 0.0) == 10.0
     assert changes == []
 
 
@@ -200,7 +196,6 @@ def test_batches_preserve_source_identity_when_labels_and_connections_collide(
     assert [batch.readings[0].value for batch in batches] == [-60.0, -70.0]
     assert [batch.device_name for batch in batches] == ["Antenna", "Antenna"]
     assert [batch.connection_key for batch in batches] == ["shared", "shared"]
-    assert len(core.latest_samples("RSSI")) == 2
 
 
 def test_batch_identity_survives_rename_and_reconnect() -> None:
@@ -218,9 +213,6 @@ def test_batch_identity_survives_rename_and_reconnect() -> None:
     assert before.connection_key != after.connection_key
     assert not old.connected
     assert new.connected
-    latest, = core.latest_samples("RSSI")
-    assert latest.binding.source is new
-    assert latest.reading.value == -70.0
 
 
 def test_capture_ignores_stale_and_disconnected_history(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -235,8 +227,6 @@ def test_capture_ignores_stale_and_disconnected_history(monkeypatch: pytest.Monk
     source.close()
     with pytest.raises(TareCaptureError, match="No telemetry"):
         core.capture_tare_offset("PT101")
-    assert core.latest_samples("PT101")[0].reading.value == 2.0
-    assert not core.latest_samples("PT101")[0].connected
     assert core.sensors() == source.sensors
 
 
@@ -248,7 +238,7 @@ def test_replacing_a_source_rejects_old_samples_reports_and_disconnects() -> Non
     old.report_control("AV101", True)
     new = core.register_source("test", "source", **declarations)
     assert new.generation != old.generation
-    assert not core.latest_samples()[0].connected
+    assert not old.connected
 
     assert old.publish_samples([("PT101", 100.0)], 100.0) is None
     assert old.report_control("AV101", False) is None
@@ -256,66 +246,12 @@ def test_replacing_a_source_rejects_old_samples_reports_and_disconnects() -> Non
     assert old.close() is None
     assert new.connected
     assert new.controls[0].reported is None
-    assert core.latest_samples()[0].reading.value == 1.0
     with pytest.raises(TareCaptureError):
         core.capture_tare_offset("PT101")
 
-    new.publish_samples([("PT101", 2.0)], 2.0)
-    assert len(core.latest_samples()) == 1
-    assert core.latest_samples()[0].connected
-    assert core.latest_samples()[0].reading.value == 2.0
-
-
-def test_reordered_reconnect_preserves_readings_until_each_sensor_publishes() -> None:
-    core = Core()
-    old = core.register_source("test", "source", sensors=[SensorDefinition("A"), SensorDefinition("B")])
-    old.publish_samples([("A", 1.0), ("B", 2.0)], 1.0)
-    old_a = core.latest_samples("A")[0]
-
-    new = core.register_source("test", "source", sensors=[SensorDefinition("B"), SensorDefinition("A")])
-    new.publish_samples([("B", 20.0)], 2.0)
-
-    assert len(core.latest_samples()) == 2
-    assert core.latest_samples("A") == (old_a,)
-    assert old_a.reading.value == 1.0
-    assert not old_a.connected
-    latest_b, = core.latest_samples("B")
-    assert latest_b.reading.value == 20.0
-    assert latest_b.binding is new.sensors[0]
-    assert latest_b.connected
-
-    new.publish_samples([("A", 10.0)], 3.0)
-    latest_a, = core.latest_samples("A")
-    assert latest_a.reading.value == 10.0
-    assert latest_a.binding is new.sensors[1]
-    assert latest_a.connected
-    assert len(core.latest_samples()) == 2
-
-
-def test_duplicate_readings_keep_occurrence_identity_when_other_declarations_move() -> None:
-    core = Core()
-    old = core.register_source(
-        "test", "source", sensors=[SensorDefinition("A", unit="psi"), SensorDefinition("A", unit="bar"), SensorDefinition("B")],
-    )
-    old.publish_samples([(old.sensors[0], 1.0), (old.sensors[1], 2.0), (old.sensors[2], 3.0)], 1.0)
-    old_first_a, _ = core.latest_samples("A")
-
-    new = core.register_source(
-        "test", "source", sensors=[SensorDefinition("B"), SensorDefinition("A", unit="psi"), SensorDefinition("A", unit="bar")],
-    )
-    new.publish_samples([(new.sensors[2], 20.0)], 2.0)
-
-    first_a, second_a = core.latest_samples("A")
-    assert first_a is old_first_a
-    assert first_a.reading.value == 1.0
-    assert not first_a.connected
-    assert second_a.reading.value == 20.0
-    assert second_a.reading.unit_name == "bar"
-    assert second_a.binding is new.sensors[2]
-    assert second_a.connected
-    assert len(core.latest_samples()) == 3
-    assert core.latest_samples("B")[0].reading.value == 3.0
-    assert not core.latest_samples("B")[0].connected
+    batch = new.publish_samples([("PT101", 2.0)], 2.0)
+    assert batch is not None
+    assert batch.readings[0].value == 2.0
 
 
 def test_accepted_and_reported_state_are_separate_and_errors_retain_last_value() -> None:
@@ -347,23 +283,6 @@ def test_initial_controls_are_visible_during_registration_notification() -> None
     assert snapshots == [observation]
 
 
-def test_dispatch_validates_every_target_before_sending() -> None:
-    core = Core()
-    writes = []
-
-    async def handler(target: ControlBinding, value: ControlValue) -> bool:
-        writes.append((target, value))
-        return True
-
-    source = core.register_source(
-        "test", "source", control_handler=handler,
-        controls=[ControlDefinition("AV101"), ControlDefinition("SV101", type=ControlType.FLOAT32)],
-    )
-    with pytest.raises(ControlValidationError):
-        asyncio.run(core.set_control(source.controls, True))
-    assert writes == []
-
-
 def test_dispatch_preserves_duplicate_name_binding_identity() -> None:
     core = Core()
     writes = []
@@ -379,7 +298,7 @@ def test_dispatch_preserves_duplicate_name_binding_identity() -> None:
     targets = core.controls("av101")
     assert targets == source.controls
 
-    results = asyncio.run(core.set_control(targets, True))
+    results = [asyncio.run(core.set_control(target, True)) for target in targets]
 
     assert len(writes) == 2
     assert writes[0][0] is source.controls[0]
@@ -395,9 +314,9 @@ def test_forged_and_foreign_bindings_fail_before_any_dispatch() -> None:
     core = Core()
     writes = []
 
-    async def handler(target: ControlBinding, value: ControlValue) -> bool:
+    async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
         writes.append((target, value))
-        return True
+        return DispatchResult(True)
 
     source = core.register_source("test", "source", controls=[ControlDefinition("AV101")], control_handler=handler)
     target = source.controls[0]
@@ -406,9 +325,9 @@ def test_forged_and_foreign_bindings_fail_before_any_dispatch() -> None:
     assert forged is not target
 
     with pytest.raises(ControlValidationError):
-        asyncio.run(core.set_control([target, forged], True))
+        asyncio.run(core.set_control(forged, True))
     with pytest.raises(ControlValidationError):
-        asyncio.run(Core().set_control([target], True))
+        asyncio.run(Core().set_control(target, True))
 
     assert writes == []
 
@@ -422,26 +341,26 @@ def test_invalid_typed_values_never_reach_the_provider(control_type: ControlType
     core = Core()
     source = core.register_source("test", "source", controls=[ControlDefinition("setpoint", type=control_type)])
     with pytest.raises(ControlValidationError):
-        asyncio.run(core.set_control(source.controls, invalid))
+        asyncio.run(core.set_control(source.controls[0], invalid))
 
 
 def test_integer_range_errors_remain_the_providers_responsibility() -> None:
     core = Core()
     values = []
 
-    async def handler(_target: ControlBinding, value: ControlValue) -> bool:
+    async def handler(_target: ControlBinding, value: ControlValue) -> DispatchResult:
         values.append(value)
-        return False
+        return DispatchResult(False)
 
     source = core.register_source(
         "test", "source", controls=[ControlDefinition("setpoint", type=ControlType.UINT32)], control_handler=handler,
     )
-    results = asyncio.run(core.set_control(source.controls, -1))
+    result = asyncio.run(core.set_control(source.controls[0], -1))
     assert values == [-1]
-    assert not results[0].submitted
+    assert not result.submitted
 
 
-def test_dispatch_returns_partial_failure_and_does_not_infer_acceptance() -> None:
+def test_dispatch_reports_handler_failure_and_does_not_infer_acceptance() -> None:
     core = Core()
     writes = []
     failure = OSError("connection failed")
@@ -456,7 +375,7 @@ def test_dispatch_returns_partial_failure_and_does_not_infer_acceptance() -> Non
         "test", "source", control_handler=handler,
         controls=[ControlDefinition("failed"), ControlDefinition("good")],
     )
-    results = asyncio.run(core.set_control(source.controls, True))
+    results = [asyncio.run(core.set_control(target, True)) for target in source.controls]
     assert writes == [("failed", True), ("good", True)]
     assert results[0] == DispatchResult(False, error="connection failed", cause=failure, target=source.controls[0])
     assert results[1] == DispatchResult(True, command_id=42, target=source.controls[1])
@@ -468,17 +387,17 @@ def test_disconnected_and_foreign_targets_cannot_dispatch() -> None:
     core = Core()
     writes = []
 
-    async def handler(target: ControlBinding, value: ControlValue) -> bool:
+    async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
         writes.append((target, value))
-        return True
+        return DispatchResult(True)
 
     source = core.register_source("test", "source", controls=[ControlDefinition("AV101")], control_handler=handler)
     source.close()
-    result, = asyncio.run(core.set_control(source.controls, True))
+    result = asyncio.run(core.set_control(source.controls[0], True))
     assert not result.submitted
     assert result.error == "Control source is unavailable."
     with pytest.raises(ControlValidationError, match="does not belong"):
-        asyncio.run(Core().set_control(source.controls, True))
+        asyncio.run(Core().set_control(source.controls[0], True))
     assert writes == []
 
 
@@ -496,14 +415,14 @@ def test_a_delayed_command_completion_cannot_change_a_replacement() -> None:
             return DispatchResult(True, command_id=42)
 
         old = core.register_source("test", "source", controls=[ControlDefinition("AV101")], control_handler=handler)
-        task = asyncio.create_task(core.set_control(old.controls, True))
+        task = asyncio.create_task(core.set_control(old.controls[0], True))
         await started.wait()
         new = core.register_source("test", "source", controls=[ControlDefinition("AV101")])
         finish.set()
-        result, = await task
-        assert not result.submitted
+        result = await task
+        # The handler did send; the result must say so even though its source was replaced.
+        assert result.submitted
         assert result.command_id == 42
-        assert result.error == "Control source was replaced or closed."
         assert new.controls[0].accepted is None
         assert new.controls[0].reported is None
 
@@ -543,6 +462,5 @@ def test_a_batch_with_an_unknown_sensor_publishes_nothing() -> None:
     with pytest.raises(ValueError, match="Unknown sensor"):
         source.publish_samples([("PT101", 1.0), ("unknown", 2.0)], 1.0)
     assert batches == []
-    assert core.latest_samples() == ()
     with pytest.raises(TareCaptureError):
         core.capture_tare_offset("PT101")

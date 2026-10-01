@@ -168,17 +168,3 @@ class TelemetryBatch:
     readings: tuple[TelemetryReading, ...]
     timestamp_source: TimestampSource
     timestamp_synced: bool
-
-
-@dataclass(frozen=True, slots=True)
-class LatestSample:
-    binding: SensorBinding
-    reading: TelemetryReading
-    timestamp_s: float
-    timestamp_source: TimestampSource
-    timestamp_synced: bool
-
-    @property
-    def connected(self) -> bool:
-        """Retained samples become unavailable when their publishing source closes."""
-        return self.binding.source.connected

@@ -85,7 +85,7 @@ def test_wrapper_dispatches_core_and_waits_for_observation(monkeypatch: pytest.M
         device.refresh_release.set()
         assert await command is device
 
-        dispatcher.assert_awaited_once_with([power], True)
+        dispatcher.assert_awaited_once_with(power, True)
         assert power.reported is not None
         assert power.reported.value is True
         assert power.accepted is None
@@ -164,8 +164,13 @@ def test_delayed_old_readback_cannot_change_rediscovered_source(monkeypatch: pyt
         if fail_old_readback:
             old.readback_error = KasaException("old refresh failed")
         old.refresh_release.set()
-        with pytest.raises(KasaException if fail_old_readback else RuntimeError):
-            await pending
+        if fail_old_readback:
+            with pytest.raises(KasaException):
+                await pending
+        else:
+            # The write was sent, so the command reports success; only its late
+            # readback is kept away from the replacement source.
+            assert await pending is old
 
         assert runtime.get_device(replacement.host) is replacement
         assert core.source("kasa", replacement.host) is new_source

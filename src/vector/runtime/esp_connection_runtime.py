@@ -180,7 +180,7 @@ class ESPConnectionRuntime:
         self.metrics = metrics or Metrics()
         self.command_tracker = command_tracker
         self.core = system_state.core
-        self.state_adapter = QLCPStateAdapter(self.core, system_state, command_tracker)
+        self.state_adapter = QLCPStateAdapter(system_state, command_tracker)
         self.state_stream = state_stream
         self._connection_counter = count(1)
 
@@ -470,8 +470,8 @@ class ESPConnectionRuntime:
         source = session.core_source
         if source is None:
             return False
-        results = await self.core.set_control([source.controls[control.id]], to_core_value(state))
-        return results[0].submitted
+        result = await self.core.set_control(source.controls[control.id], to_core_value(state))
+        return result.submitted
 
     async def _write_control(self, session: ESPDeviceSession, target: ControlBinding, value: ControlValue) -> DispatchResult:
         """Core callback: translate a typed value to QLCP and preserve its command ID."""

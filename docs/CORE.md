@@ -2,7 +2,7 @@
 
 [Architecture overview](../ARCHITECTURE.md) · [Telemetry](TELEMETRY.md) · [Control Nodes](NODES.md)
 
-`vector.core` is an internal Python library shared by VECTOR's services. `build_runtime()` constructs one `Core` object and passes it to the providers and consumers. The core owns resource declarations, latest readings, tares, control observations, and command routing. Services own connections and tasks; consumers own serialization, queues, and recording files.
+`vector.core` is an internal Python library shared by VECTOR's services. `build_runtime()` constructs one `Core` object and passes it to the providers and consumers. The core owns resource declarations, tares, control observations, and command routing. Services own connections and tasks; consumers own serialization, queues, and recording files.
 
 A new sensor service only needs to register its definitions and publish measurements. It does not need a QLCP node or an ESP session. QLCP and Kasa use the same core as providers today.
 
@@ -10,9 +10,9 @@ A new sensor service only needs to register its definitions and publish measurem
 
 - A **definition** describes an operator-facing sensor or control: its name, group, units, and, for controls, value type and optional default. Definitions are immutable and contain no transport objects or packet IDs.
 - A **source** is one independently connected producer, identified by a provider and stable key. Examples are `("qlcp", "PANDA")` and `("kasa", "192.168.0.20")`.
-- A **binding** joins a definition to a source. A command targets control bindings explicitly; a latest reading identifies the sensor binding that produced it.
+- A **binding** joins a definition to a source. A command targets control bindings explicitly.
 
-One source can declare many sensors and controls. Several sources can declare the same resource name. Sensor lookup and tares use exact names; control lookup is case-insensitive. The core retains each source's metadata and readings independently, without selecting a preferred sensor path.
+One source can declare many sensors and controls. Several sources can declare the same resource name. Sensor lookup and tares use exact names; control lookup is case-insensitive. The core keeps each source's metadata and control observations separate and does not select a preferred sensor path.
 
 Source names are display labels and may repeat. Telemetry and state projections carry `source_provider` and `source_key`; use that pair for stable identity and `connection_key` to distinguish connections. For example, `("wireless", "pad")` and `("qlcp", "pad")` remain separate even if both are named `Pad`. CSV rows retain the label in `source` and append the same two identity columns.
 
@@ -26,9 +26,9 @@ Import public types from `vector.core`. The implementation is split into [models
 | Provider | `source.publish_samples(samples, timestamp_s=...)` | Submits raw physical-unit values as `(sensor_name, value)` or `(sensor_binding, value)` pairs. |
 | Provider | `source.report_control(...)`, `source.accept_control(...)` | Updates observed hardware state or accepted requests separately. |
 | Provider | `source.close()` | Disables its publishing and commands while retaining descriptions and last-known state. |
-| Consumer | `core.sources()`, `sensors()`, `controls()`, `latest_samples()` | Reads the catalog and latest samples, including source identity and availability. |
+| Consumer | `core.sources()`, `sensors()`, `controls()` | Reads the catalog, including source identity and availability. |
 | Consumer | `core.subscribe_samples(callback)`, `subscribe_changes(callback)` | Receives synchronous updates; returns an unsubscribe function. |
-| Command caller | `await core.set_control(targets, value)` | Validates all explicit targets first, then returns one `DispatchResult` per target. |
+| Command caller | `await core.set_control(target, value)` | Validates one explicit target and value, then returns its `DispatchResult`. |
 | Tare caller | `core.capture_tare(...)`, `set_tare(...)`, `clear_tare(...)`, `tares()` | Shares an offset across sources reporting the exact sensor name. |
 
 Control values are `bool`, `int`, or `float`; `ControlType` has `BOOL`, `UINT32`, `INT32`, and `FLOAT32` members. The QLCP adapter translates OPEN/CLOSED into booleans. Kasa declares a boolean `power` control with no default.
@@ -39,12 +39,14 @@ Bindings have an ordinal within their source's declaration list. The QLCP adapte
 
 All calls run on the existing asyncio loop. Subscription callbacks must return promptly. Stream consumers queue messages, the display consumer downsamples, and the recorder performs buffered writes. Callbacks do not become independent tasks automatically.
 
-Pass the existing core into a new service from `build_runtime()`; create a separate `Core()` only for an isolated test or tool. Subscribe once when a consumer starts and keep the unsubscribe function for cleanup. Subscriptions send future updates only. Read `latest_samples()` for an initial view, and inspect both `connected` and `timestamp_s`: an available source can still have an old reading.
+Pass the existing core into a new service from `build_runtime()`; create a separate `Core()` only for an isolated test or tool. Subscribe once when a consumer starts and keep the unsubscribe function for cleanup. Subscriptions send future updates only.
+
+Subscribers observe; they must not call `set_control`. A sensor reading can inform an operator or block a command, but it never issues one.
 
 ## A reading from hardware to recording
 
 1. A provider reads its hardware, converts the value to the declared unit, and chooses a timestamp in the server's monotonic timebase. QLCP's UDP adapter also maps packet IDs to sensor bindings here.
-2. `source.publish_samples()` records raw history for tare capture, subtracts the shared offset, and retains the latest sample with its timestamp and applied tare.
+2. `source.publish_samples()` records raw history for tare capture and subtracts the shared offset.
 3. The core calls each sample subscriber once. `build_runtime()` subscribes the full-rate stream, display stream, and session publisher. The latter writes a CSV row when a recording is active.
 4. The recording schema comes from the common catalog through `SystemState`, so a sensor-only source participates in recording just as a node does.
 
@@ -66,9 +68,6 @@ def demonstrate_provider(core: Core) -> None:
     unsubscribe = core.subscribe_samples(lambda batch: print(batch.readings))
     try:
         source.publish_samples([("PAD_RSSI", -62.0)], timestamp_s=time.monotonic())
-        latest, = core.latest_samples("PAD_RSSI")
-        assert latest.reading.value == -62.0
-        assert latest.connected
     finally:
         unsubscribe()
         source.close()
@@ -76,19 +75,23 @@ def demonstrate_provider(core: Core) -> None:
 
 A real polling service keeps its source handle for its lifetime and publishes each poll through that handle. Polling, credentials, retries, and cleanup belong to the service.
 
-Latest readings preserve the tare applied when published. Changing a tare affects future samples and does not fabricate a fresh reading. Tare captures that produce a non-finite offset are rejected without changing the existing tare. Closing a source marks retained readings unavailable and prevents its old raw history from being used for tare capture.
+The core does not detect a source that goes quiet: `connected` changes only when a provider closes or replaces its registration. QLCP nodes are closed by their heartbeat loop. Other providers have no liveness signal yet: a non-QLCP source stays `connected`, and one shown in the device list reports heartbeat `ok`, however long ago it last published.
+
+A tare is keyed by exact sensor name across every provider, not just QLCP nodes. A new provider that reuses a tared name inherits that offset.
+
+Changing a tare affects future samples and does not fabricate a fresh reading. Tare captures that produce a non-finite offset are rejected without changing the existing tare. Closing a source prevents its old raw history from being used for tare capture.
 
 ## A control request from API to feedback
 
 1. The API or CLI resolves its existing target scope and converts operator input into a typed value. QLCP REST requests still target matching node controls; Kasa requests still target a selected plug.
-2. `core.set_control()` validates every selected binding before invoking any provider. It calls the registered async `handler(binding, value)` with the exact selected binding and returns submission results, including a QLCP command ID when available. An unavailable or failed target has its own failure result.
+2. `core.set_control()` validates the selected binding and value before invoking the provider. It calls the registered async `handler(binding, value)` with that exact binding and returns the handler's `DispatchResult`, including a QLCP command ID when available. An unavailable source or a failed handler returns a failure result. If the source closes while the handler awaits I/O, the handler's result still stands: a command that was sent is reported as sent.
 3. The QLCP handler maps the binding's declaration ordinal to its wire control ID, then builds and sends CONTROL through the existing command tracker. This preserves distinct targets even when a node declares the same name in different groups. The Kasa handler writes power and refreshes the device to read it back.
 4. Hardware feedback enters through `source.report_control()`. QLCP response correlation stays in its adapter and tracker; accepted requests and reported `confirmed`, `pending`, or `error` states remain distinct from successful transmission.
 5. `SystemState` translates core changes into the existing GUI snapshots and events. It reads command history from the existing QLCP tracker rather than maintaining a second history.
 
-A service requesting an actuation can use `core.source(provider, key)`, then `source.control(name)` to select a target. Both lookups can return `None`. Pass the binding to `await core.set_control([target], value)` and inspect the returned result's `submitted` and `error` fields. Queries include disconnected sources; dispatch reports these as unavailable.
+A service requesting an actuation can use `core.source(provider, key)`, then `source.control(name)` to select a target. Both lookups can return `None`. Pass the binding to `await core.set_control(target, value)` and inspect the returned result's `submitted` and `error` fields. Queries include disconnected sources; dispatch reports these as unavailable.
 
-Targets in one call are sent sequentially, and a later failure does not undo earlier sends. Separate callers can interleave while handlers await I/O. Inspect the reported observation when physical completion matters; submission alone does not establish it.
+A caller that fans out calls `set_control` once per target; a later failure does not undo earlier sends. Separate callers can interleave while handlers await I/O. Inspect the reported observation when physical completion matters; submission alone does not establish it.
 
 ## Lifetime and extension
 

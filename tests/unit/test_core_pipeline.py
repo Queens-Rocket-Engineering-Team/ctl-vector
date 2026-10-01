@@ -35,7 +35,7 @@ class _Socket:
         pass
 
 
-def test_sensor_provider_reaches_latest_raw_display_tare_and_recording(tmp_path: Path) -> None:
+def test_sensor_provider_reaches_raw_display_tare_and_recording(tmp_path: Path) -> None:
     async def run() -> None:
         core = Core()
         state = SystemState(core=core)
@@ -64,15 +64,13 @@ def test_sensor_provider_reaches_latest_raw_display_tare_and_recording(tmp_path:
         source.publish_samples([("PAD_RSSI", -62.0)], 1.1)
         source.publish_samples([("PAD_RSSI", -60.0)], 1.2)
         assert core.capture_tare("PAD_RSSI", samples=2) == (-61.0, "Pad antenna", 2)
-        assert core.latest_samples("PAD_RSSI")[0].reading.value == -60.0
         source.publish_samples([("PAD_RSSI", -59.0)], 2.1)
-        source.publish_samples([("PAD_RSSI", -58.0)], 3.1)
+        latest = source.publish_samples([("PAD_RSSI", -58.0)], 3.1)
 
-        latest, = core.latest_samples("PAD_RSSI")
-        assert latest.reading.value == 3.0
-        assert latest.reading.tare == -61.0
+        assert latest is not None
+        assert latest.readings[0].value == 3.0
+        assert latest.readings[0].tare == -61.0
         assert latest.timestamp_s == 3.1
-        assert latest.binding.source is source
         assert state.core.tares() == {"PAD_RSSI": -61.0}
         assert writer.rows == 4
 
@@ -91,7 +89,7 @@ def test_sensor_provider_reaches_latest_raw_display_tare_and_recording(tmp_path:
         assert tared_bucket["readings"][0]["points"] == [{"t": 2.1, "v": 2.0}]
 
         source.close()
-        assert not latest.connected
+        assert not source.connected
         assert source.publish_samples([("PAD_RSSI", 99.0)], 4.1) is None
         assert writer.rows == 4
         for close in unsubscribe:

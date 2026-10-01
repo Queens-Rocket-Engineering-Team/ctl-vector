@@ -25,7 +25,7 @@ MICROSECONDS_PER_SECOND = 1_000_000
 
 
 class TelemetryRuntime:
-    """Receive QLCP data; the core owns taring, latest samples, and publication."""
+    """Receive QLCP data; the core owns taring and publication."""
 
     def __init__(
         self,

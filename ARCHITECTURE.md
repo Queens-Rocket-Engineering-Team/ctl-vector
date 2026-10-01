@@ -39,7 +39,7 @@ Paths below are relative to `src/vector/` unless stated otherwise.
 |---|---|
 | [server.py](src/vector/server.py), [runtime/services.py](src/vector/runtime/services.py) | Build the shared runtime objects and manage process startup and shutdown. |
 | [api/](src/vector/api/) | FastAPI routes, request validation, HTTP responses, and WebSocket entry points. Routes call runtime services. |
-| [core/](src/vector/core/) | Protocol-independent sensor/control definitions, source registration, readings, tares, subscriptions, and control dispatch. See the [core walkthrough](docs/CORE.md). |
+| [core/](src/vector/core/) | Protocol-independent sensor/control definitions, source registration, sample publication, tares, subscriptions, and control dispatch. See the [core walkthrough](docs/CORE.md). |
 | [runtime/](src/vector/runtime/) | Coordinate ongoing work: connections, commands, telemetry, client streams, discovery, recording, and peripherals. A runtime owns the lifetime and behavior of its subsystem. |
 | [drivers/](src/vector/drivers/) | Low-level operations on one device: ESP socket framing or camera ONVIF calls. |
 | [state/](src/vector/state/) | Present core resources and transport diagnostics through existing client snapshots, events, and recording schemas; own active-recording presentation. |
@@ -56,7 +56,7 @@ Paths below are relative to `src/vector/` unless stated otherwise.
 
 The shared loop is an architectural assumption. For example, recording attaches its CSV writer without an `await`, so telemetry cannot arrive halfway through that operation. QLCP decoding also reuses buffers under this single-thread assumption. Moving work into another thread or process requires revisiting those boundaries.
 
-The core owns declarations, readings, tares, and control observations. The ESP runtime owns live connections, `CommandTracker` owns QLCP command lifecycles, and `SessionRuntime` owns the active recording. `SystemState` presents these through the client-facing view without retaining ESP sessions. The core retains disconnected descriptions and last-known readings while live services remove their connections. Most state is in memory; restarting loses tares and command history. Completed recordings live on disk.
+The core owns declarations, tares, and control observations. The ESP runtime owns live connections, `CommandTracker` owns QLCP command lifecycles, and `SessionRuntime` owns the active recording. `SystemState` presents these through the client-facing view without retaining ESP sessions. The core retains disconnected descriptions and last-known control observations while live services remove their connections. Most state is in memory; restarting loses tares and command history. Completed recordings live on disk.
 
 On shutdown, the server cancels its API and CLI tasks, attempts to finalize the recording, cancels runtime tasks, and closes device resources. Log streaming stops last. Runtime tasks are created directly; there is no service supervisor that restarts failed tasks inside the process.
 

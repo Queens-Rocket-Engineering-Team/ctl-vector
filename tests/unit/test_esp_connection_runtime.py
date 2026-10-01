@@ -823,7 +823,7 @@ def test_core_dispatches_duplicate_control_names_to_distinct_wire_ids() -> None:
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
         targets = state.core.controls("shared", provider="qlcp")
 
-        outcomes = await state.core.set_control(targets, True)
+        outcomes = [await state.core.set_control(target, True) for target in targets]
 
         assert len(outcomes) == 2
         assert all(outcome.submitted for outcome in outcomes)
@@ -865,8 +865,8 @@ def test_core_dispatch_preserves_types_of_same_named_control_bindings() -> None:
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
         boolean, integer = state.core.controls("SHARED", provider="qlcp")
 
-        bool_result, = await state.core.set_control([boolean], True)
-        int_result, = await state.core.set_control([integer], -25)
+        bool_result = await state.core.set_control(boolean, True)
+        int_result = await state.core.set_control(integer, -25)
 
         assert bool_result.submitted
         assert int_result.submitted

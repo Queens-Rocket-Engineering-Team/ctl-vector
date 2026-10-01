@@ -26,7 +26,6 @@ from vector.core.models import (
     ControlValue,
     CoreChange,
     DispatchResult,
-    LatestSample,
     SensorBinding,
     SensorDefinition,
     TelemetryBatch,
@@ -41,7 +40,7 @@ TARE_SAMPLE_CAPACITY = 256
 TARE_DEFAULT_SAMPLES = 16
 TARE_SAMPLE_MAX_AGE_S = 2.0
 
-ControlHandler = Callable[[ControlBinding, ControlValue], Awaitable[DispatchResult | bool]]
+ControlHandler = Callable[[ControlBinding, ControlValue], Awaitable[DispatchResult]]
 _Notification = TypeVar("_Notification")
 _Binding = TypeVar("_Binding", SensorBinding, ControlBinding)
 
@@ -100,15 +99,6 @@ class Source:
         self.sensors = tuple(SensorBinding(self, definition, i) for i, definition in enumerate(sensors))
         self.controls = tuple(ControlBinding(self, definition, i) for i, definition in enumerate(controls))
         self._sensors = {sensor.name: sensor for sensor in self.sensors}
-        # Declaration ordinals may change on reconnect. Match retained readings by
-        # exact name and occurrence so unrelated sensors never overwrite each other.
-        occurrences: dict[str, int] = {}
-        latest_keys = []
-        for sensor in self.sensors:
-            occurrence = occurrences.get(sensor.name, 0)
-            latest_keys.append((provider, key, sensor.name, occurrence))
-            occurrences[sensor.name] = occurrence + 1
-        self._latest_keys = tuple(latest_keys)
         self._controls = {control.name.upper(): control for control in self.controls}
         self._accepted: dict[int, ControlObservation] = {}
         self._reported = {
@@ -134,13 +124,11 @@ class Source:
         """Look up a name ignoring case; use ``controls`` to retain duplicate bindings."""
         return self._controls.get(name.upper())
 
-    def accepted_control(self, name: str | ControlBinding) -> ControlObservation | None:
-        control = self._resolve_control(name)
-        return self._accepted.get(control.id) if control is not None else None
+    def accepted_control(self, control: ControlBinding) -> ControlObservation | None:
+        return self._accepted.get(control.id)
 
-    def reported_control(self, name: str | ControlBinding) -> ControlObservation | None:
-        control = self._resolve_control(name)
-        return self._reported.get(control.id) if control is not None else None
+    def reported_control(self, control: ControlBinding) -> ControlObservation | None:
+        return self._reported.get(control.id)
 
     def _resolve_control(self, name: str | ControlBinding) -> ControlBinding | None:
         if isinstance(name, str):
@@ -228,7 +216,6 @@ class Core:
         self._next_generation = 0
         self._tares: dict[str, float] = {}
         self._history: dict[tuple[Source, str], _SampleBuffer] = {}
-        self._latest: dict[tuple[str, str, str, int], LatestSample] = {}
         self._sample_subscribers: list[_Subscription[TelemetryBatch]] = []
         self._change_subscribers: list[_Subscription[CoreChange]] = []
 
@@ -295,52 +282,32 @@ class Core:
             if name is None or control.name.upper() == name.upper()
         )
 
-    def latest_samples(self, name: str | None = None) -> tuple[LatestSample, ...]:
-        """Return the last published reading per source, preserving its original tare."""
-        return tuple(sample for sample in self._latest.values() if name is None or sample.binding.name == name)
+    async def set_control(self, target: ControlBinding, value: ControlValue) -> DispatchResult:
+        """Validate one explicit target and value, then report the provider's submission.
 
-    async def set_control(self, targets: Iterable[ControlBinding], value: ControlValue) -> tuple[DispatchResult, ...]:
-        """Validate every explicit target before dispatch, then report each submission.
-
-        A failed or disconnected target does not prevent later targets from being
-        attempted. Dispatch is sequential with no rollback of earlier submissions.
-        Providers report acceptance and physical feedback separately.
+        An invalid target or value raises before anything is sent. An unavailable
+        source or a failed handler returns a failure result. The handler's result
+        stands even if its source closes while it awaits I/O: a command that was
+        sent is reported as sent. Providers report acceptance and physical
+        feedback separately.
         """
-        targets = tuple(targets)
-        values = []
-        for target in targets:
-            if target.source._core is not self or target.source._resolve_control(target) is not target:
-                raise ControlValidationError("Control target does not belong to this core registration.")
-            values.append(_validated_value(target, value))
-
-        results = []
-        for target, validated in zip(targets, values, strict=True):
-            source = target.source
-            handler = source._control_handler
-            if not self._is_current(source) or handler is None:
-                results.append(DispatchResult(False, error="Control source is unavailable.", target=target))
-                continue
-            try:
-                outcome = await handler(target, validated)
-                if isinstance(outcome, bool):
-                    outcome = DispatchResult(outcome)
-                if not isinstance(outcome, DispatchResult):
-                    raise TypeError("Control handlers must return DispatchResult or bool.")  # noqa: TRY301
-            except Exception as exc:
-                results.append(DispatchResult(False, error=str(exc), cause=exc, target=target))
-                continue
-            # The handler awaited I/O; the source may have reconnected meanwhile.
-            if not self._is_current(source):
-                results.append(DispatchResult(False, command_id=outcome.command_id, error="Control source was replaced or closed.", target=target))
-                continue
-            results.append(replace(outcome, target=target))
-        return tuple(results)
+        source = target.source
+        if source._core is not self or source._resolve_control(target) is not target:
+            raise ControlValidationError("Control target does not belong to this core registration.")
+        validated = _validated_value(target, value)
+        handler = source._control_handler
+        if not self._is_current(source) or handler is None:
+            return DispatchResult(False, error="Control source is unavailable.", target=target)
+        try:
+            outcome = await handler(target, validated)
+        except Exception as exc:
+            return DispatchResult(False, error=str(exc), cause=exc, target=target)
+        return replace(outcome, target=target)
 
     def subscribe_samples(self, callback: Callable[[TelemetryBatch], None]) -> Callable[[], None]:
         """Receive future batches inline; queue slow work and unsubscribe on teardown.
 
-        No history is replayed; query ``latest_samples`` for retained readings.
-        The returned unsubscribe function is idempotent.
+        No history is replayed. The returned unsubscribe function is idempotent.
         """
         return _subscribe(self._sample_subscribers, callback)
 
@@ -350,9 +317,6 @@ class Core:
 
     def tares(self) -> dict[str, float]:
         return dict(sorted(self._tares.items()))
-
-    def tare_for(self, sensor_name: str) -> float:
-        return self._tares.get(sensor_name, 0.0)
 
     def set_tare(self, sensor_name: str, offset: float) -> CoreChange:
         """Share the exact-name offset across sources; apply it to subsequent readings."""
@@ -458,11 +422,7 @@ class Core:
             buffer.values.append(raw_value)
             buffer.last_updated_monotonic = now
             tare = self._tares.get(definition.name, 0.0)
-            reading = TelemetryReading(binding.id, definition.name, raw_value - tare, definition.unit, definition.group, tare)
-            readings.append(reading)
-            self._latest[source._latest_keys[binding.id]] = LatestSample(
-                binding, reading, timestamp_s, timestamp_source, timestamp_synced,
-            )
+            readings.append(TelemetryReading(binding.id, definition.name, raw_value - tare, definition.unit, definition.group, tare))
         batch = TelemetryBatch(
             source_provider=source.provider,
             source_key=source.key,

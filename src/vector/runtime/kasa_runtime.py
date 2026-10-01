@@ -27,7 +27,7 @@ class KasaRuntime:
         entries = list(self._registry.values())
         await asyncio.gather(*(dev.update() for dev, _ in entries))
         for dev, source in entries:
-            if self._registry.get(dev.host) == (dev, source):
+            if source.connected:
                 control = source.control("power")
                 if control is not None and (control.reported is None or control.reported.value != dev.is_on):
                     source.report_control("power", dev.is_on)
@@ -46,7 +46,7 @@ class KasaRuntime:
         dev, source = self._require_device(host)
         target = source.control("power")
         assert target is not None
-        result, = await self.core.set_control([target], active)
+        result = await self.core.set_control(target, active)
         if not result.submitted:
             if result.cause is not None:
                 raise result.cause
@@ -69,7 +69,7 @@ class KasaRuntime:
         except KasaException:
             logger.exception("Kasa error controlling device at %s", dev.host)
             # A delayed failure from an old discovery must not remove its replacement.
-            if self._registry.get(dev.host) == (dev, source):
+            if source.connected:
                 self._remove_device(dev.host)
             raise
         except Exception:

@@ -111,7 +111,7 @@ def test_capture_averages_recent_readings_and_publishes_state_event() -> None:
         "sample_count": 2,
         "applies_to": ["PANDA"],
     }
-    assert system_state.core.tare_for("PT101") == 15.0
+    assert system_state.core.tares().get("PT101", 0.0) == 15.0
     assert published == [{"type": "tare.updated", "state_version": 1, "sensor_name": "PT101", "offset": 15.0}]
 
 
@@ -124,7 +124,7 @@ def test_capture_without_recent_telemetry_is_rejected() -> None:
 
     assert resp.status_code == 409
     assert "No telemetry received" in resp.json()["detail"]
-    assert system_state.core.tare_for("PT101") == 0.0
+    assert system_state.core.tares().get("PT101", 0.0) == 0.0
     assert published == []
 
 
@@ -151,7 +151,7 @@ def test_non_finite_capture_returns_conflict_and_preserves_existing_tare(values:
 
     assert response.status_code == 409
     assert "finite" in response.json()["detail"].lower()
-    assert runtime.core.tare_for("PT101") == 15.0
+    assert runtime.core.tares().get("PT101", 0.0) == 15.0
     assert system_state.state_version == version
     assert published == []
 
@@ -193,7 +193,7 @@ def test_explicit_offset_skips_capture() -> None:
 
     assert resp.status_code == 200
     assert resp.json()["sampled_device"] is None
-    assert system_state.core.tare_for("PT101") == 4.5
+    assert system_state.core.tares().get("PT101", 0.0) == 4.5
     assert len(published) == 1
 
 
@@ -206,7 +206,7 @@ def test_explicit_offset_is_accepted_for_a_sensor_no_device_reports_yet() -> Non
 
     assert resp.status_code == 200
     assert resp.json()["applies_to"] == []
-    assert system_state.core.tare_for("PT999") == 1.0
+    assert system_state.core.tares().get("PT999", 0.0) == 1.0
 
 
 def test_non_finite_offset_is_rejected() -> None:
@@ -223,7 +223,7 @@ def test_non_finite_offset_is_rejected() -> None:
             )
             assert resp.status_code == 400, literal
 
-    assert system_state.core.tare_for("PT101") == 0.0
+    assert system_state.core.tares().get("PT101", 0.0) == 0.0
     assert published == []
 
 
@@ -262,7 +262,7 @@ def test_delete_clears_the_offset_and_publishes() -> None:
 
     assert resp.status_code == 200
     assert resp.json()["offset"] == 0.0
-    assert system_state.core.tare_for("PT101") == 0.0
+    assert system_state.core.tares().get("PT101", 0.0) == 0.0
     assert published == [{"type": "tare.cleared", "state_version": 2, "sensor_name": "PT101"}]
 
 
@@ -285,4 +285,4 @@ def test_delete_handles_sensor_names_containing_a_slash() -> None:
         resp = client.delete("/v1/tares", params={"sensor_name": "PT101/A"})
 
     assert resp.status_code == 200
-    assert system_state.core.tare_for("PT101/A") == 0.0
+    assert system_state.core.tares().get("PT101/A", 0.0) == 0.0

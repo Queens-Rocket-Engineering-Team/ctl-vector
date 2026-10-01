@@ -22,7 +22,7 @@ def _free_udp_port() -> int:
         probe.close()
 
 
-def _listener() -> tuple[TelemetryRuntime, list[TelemetryBatch], Core]:
+def _listener() -> tuple[TelemetryRuntime, list[TelemetryBatch]]:
     core = Core()
     source = core.register_source(
         "qlcp", "MockDevice", address="127.0.0.1", connection_key="esp-1",
@@ -39,7 +39,7 @@ def _listener() -> tuple[TelemetryRuntime, list[TelemetryBatch], Core]:
     ))
     batches: list[TelemetryBatch] = []
     core.subscribe_samples(batches.append)
-    return TelemetryRuntime({session.address: session}.get), batches, core
+    return TelemetryRuntime({session.address: session}.get), batches
 
 
 async def _drive(listener: TelemetryRuntime, port: int, data: bytes, stop: Callable[[], bool]) -> None:
@@ -61,7 +61,7 @@ async def _drive(listener: TelemetryRuntime, port: int, data: bytes, stop: Calla
 
 def test_listener_publishes_decoded_batches_once() -> None:
     async def run() -> None:
-        listener, batches, core = _listener()
+        listener, batches = _listener()
         packet = DataPacket(
             header=PacketHeader(sequence=1, timestamp_us=1000000),
             readings=[SensorReading(sensor_id=0, value=12.5)],
@@ -72,14 +72,13 @@ def test_listener_publishes_decoded_batches_once() -> None:
         assert batches[0].device_name == "MockDevice"
         assert batches[0].device_address == "127.0.0.1"
         assert batches[0].readings[0].value == 12.5
-        assert core.latest_samples("PT101")[0].reading == batches[0].readings[0]
 
     asyncio.run(run())
 
 
 def test_listener_skips_publish_when_ingest_returns_none() -> None:
     async def run() -> None:
-        listener, batches, _core = _listener()
+        listener, batches = _listener()
         received: list[str] = []
         handle_datagram = listener.handle_datagram
 

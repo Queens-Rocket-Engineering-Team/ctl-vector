@@ -7,7 +7,7 @@ It retains sessions for live transport health; SystemState receives scalar views
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
-from vector.core import ControlDefinition, ControlStatus, ControlType, Core, SensorDefinition
+from vector.core import ControlDefinition, ControlStatus, ControlType, SensorDefinition
 from vector.qlcp.enums import ControlConfirmStatus, ControlState, PacketType
 from vector.runtime.command_tracker import CommandRecord, CommandTracker, is_operator_visible
 from vector.state.system_state import StateEvent, SystemState, control_state_name, source_identity
@@ -94,16 +94,17 @@ class QLCPStateAdapter:
     Command methods return projected events for the runtime's existing emitter.
     """
 
-    def __init__(self, core: Core, state: SystemState, tracker: CommandTracker) -> None:
-        self.core = core
+    def __init__(self, state: SystemState, tracker: CommandTracker) -> None:
+        self.core = state.core
         self.state = state
         self.commands = CommandProjection(tracker)
         self._sessions: dict[str, ESPDeviceSession] = {}
         state.set_transport_views(commands=self.commands, health=self._health)
 
     def register_device(self, device: ESPDeviceSession, *, control_handler: ControlHandler | None = None) -> None:
-        # CONFIG IDs are declaration ordinals. Preserve that order so telemetry,
-        # dispatch, and feedback can target bindings even when names repeat.
+        # CONFIG IDs are declaration ordinals (DeviceConfig rejects anything else).
+        # Preserve that order so telemetry, dispatch, and feedback can target
+        # bindings even when names repeat.
         self._sessions[device.name] = device
         device.core_source = self.core.register_source(
             "qlcp",
@@ -128,9 +129,8 @@ class QLCPStateAdapter:
         )
 
     def mark_disconnected(self, device: ESPDeviceSession) -> None:
-        source = self._source_for(device)
-        if source is not None:
-            source.close()
+        if device.core_source is not None:
+            device.core_source.close()
 
     def record_reported_control_state(
         self,
@@ -158,13 +158,9 @@ class QLCPStateAdapter:
         if control is not None and value is not None:
             control.source.accept_control(control, value, now=now)
 
-    def _source_for(self, device: ESPDeviceSession) -> Source | None:
-        source = getattr(device, "core_source", None)
-        return source if source is not None and source.connection_key == device.connection_key else None
-
     def _control_for(self, device: ESPDeviceSession, control_id: int) -> ControlBinding | None:
         # QLCP control IDs are the declaration ordinals preserved at registration.
-        source = self._source_for(device)
+        source = device.core_source
         return source.controls[control_id] if source is not None and 0 <= control_id < len(source.controls) else None
 
     def _health(self, source: Source) -> tuple[float | None, int]:

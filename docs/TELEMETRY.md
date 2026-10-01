@@ -10,7 +10,7 @@ Telemetry is the stream of sensor readings published through the [shared core](C
 flowchart TB
     Node["Control Node"] -->|"UDP DATA"| Ingest["TelemetryRuntime: decode and map IDs"]
     Registry["ESP device registry"] -->|"Session by source IP"| Ingest
-    Ingest -->|"Publish through registered source"| Core["Core: raw history, tare, latest readings"]
+    Ingest -->|"Publish through registered source"| Core["Core: raw history, tare"]
     Other["Other sensor providers"] --> Core
     Core --> Batch["TelemetryBatch"]
     Batch --> Raw["Full-rate WebSocket stream"]
@@ -38,7 +38,7 @@ A **tare** is an offset subtracted from a sensor's reading to zero it. The core 
 
 The resulting offset is stored in the core by sensor name and applies to every source reporting that name, following the [equipment naming convention](NODES.md#names-and-identity). `SystemState` presents these offsets to clients. This keeps all clients consistent and lets a tare survive a reconnect. Offsets are held in memory and disappear when VECTOR restarts. Re-taring uses raw samples, so offsets do not accumulate.
 
-`core.latest_samples()` retains one last-published reading per binding with its timestamp, applied tare, and availability. Changing a tare affects subsequent samples; it does not change the retained sample's timestamp or value. Closing a source leaves its last-known sample visible as unavailable and discards its tare-capture history.
+Changing a tare affects subsequent samples only. Closing a source discards its tare-capture history.
 
 The `/ws/telemetry/raw` stream is full rate, but its `value` is already tared. It includes the offset as `tare`, allowing recovery of the original reading as `value + tare`. Display points and session CSV sensor values are also tared, but do not include a per-reading offset.
 
@@ -52,6 +52,6 @@ Both telemetry sockets have independent, bounded queues per client. When a queue
 
 ## Changing this subsystem
 
-QLCP sensor mapping and timestamp selection belong in `TelemetryRuntime`. Shared tare processing and latest readings belong in the core. Add consumers through `core.subscribe_samples()` and the composition in `build_runtime()`. Keep client serialization in the stream classes. The [provider walkthrough](CORE.md#a-reading-from-hardware-to-recording) shows how to add a sensor path without QLCP.
+QLCP sensor mapping and timestamp selection belong in `TelemetryRuntime`. Shared tare processing belongs in the core. Add consumers through `core.subscribe_samples()` and the composition in `build_runtime()`. Keep client serialization in the stream classes. The [provider walkthrough](CORE.md#a-reading-from-hardware-to-recording) shows how to add a sensor path without QLCP.
 
 Relevant tests cover [ingest and tare capture](../tests/unit/test_telemetry_ingest.py), [UDP reception](../tests/unit/test_telemetry_udp_listener.py), [display bucketing](../tests/unit/test_telemetry_display_stream.py), and [raw-stream backpressure](../tests/unit/test_telemetry_stream.py). The [integration tests](../tests/integration/test_mock_device_integration.py) also check that applying a tare preserves the recoverable raw reading.
