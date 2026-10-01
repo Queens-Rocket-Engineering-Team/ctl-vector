@@ -69,8 +69,7 @@ async def _handle_tare_command(runtime: RuntimeServices, args: list) -> None:
     sensor_name = args[0]
 
     if len(args) > 1 and args[1].lower() in ("clear", "reset", "off"):
-        event = runtime.core.clear_tare(sensor_name)
-        if event is None:
+        if not runtime.core.clear_tare(sensor_name):
             logger.info(f"Sensor '{sensor_name}' is not tared")
             return
         logger.info(f"Cleared tare for '{sensor_name}'")
@@ -88,11 +87,12 @@ async def _handle_tare_command(runtime: RuntimeServices, args: list) -> None:
             return
 
     try:
-        offset, device_name, count = runtime.core.capture_tare(sensor_name, samples=samples)
+        offset, device_name, count = runtime.core.capture_tare_offset(sensor_name, samples=samples)
     except TareCaptureError as exc:
         logger.info(str(exc))
         return
 
+    runtime.core.set_tare(sensor_name, offset)
     logger.info(f"Tared '{sensor_name}' to {offset} from {count} readings on {device_name}")
 
 

@@ -273,11 +273,8 @@ def test_capture_tare_offset_without_samples_raises() -> None:
     session = _make_session()
     _ingest, core = _make_ingest(session)
 
-    with pytest.raises(TareCaptureError) as excinfo:
+    with pytest.raises(TareCaptureError, match="No telemetry received"):
         core.capture_tare_offset("TC1")
-
-    assert excinfo.value.candidates == ()
-    assert "No telemetry received" in str(excinfo.value)
 
 
 def test_capture_tare_offset_ignores_stale_samples(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,10 +297,8 @@ def test_capture_tare_offset_reports_candidates_when_name_is_ambiguous() -> None
     ingest.handle_packet(_data_packet((0, 4.0)), ground)
     ingest.handle_packet(_data_packet((0, 90.0)), flight)
 
-    with pytest.raises(TareCaptureError) as excinfo:
+    with pytest.raises(TareCaptureError, match=r"\(FLIGHT, GROUND\)"):
         core.capture_tare_offset("TC1")
-
-    assert excinfo.value.candidates == ("FLIGHT", "GROUND")
 
     offset, device_name, _count = core.capture_tare_offset("TC1", device_name="FLIGHT")
     assert offset == pytest.approx(90.0)

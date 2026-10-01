@@ -68,7 +68,7 @@ There is one live session per IP, and a newly registered device with an existing
 
 Heartbeats are sent every five seconds. The heartbeat loop also expires commands older than ten seconds, so expiry is checked on that loop's schedule. Three consecutive expired heartbeat responses remove the session; a matched heartbeat ACK resets the miss count. Read failures, socket closure, and failed operator-command sends also remove it.
 
-Cleanup closes the socket, cancels session tasks, fails pending commands as `timed_out`, and closes the source handle. The core retains its description for client display and recording schemas; `SystemState` publishes the existing disconnect event. Connection-key and source-generation checks prevent cleanup or feedback from an old session from affecting its replacement. The node's own five-minute watchdog is a separate [safety layer](SAFETY.md).
+Cleanup closes the socket, cancels session tasks, fails pending commands as `timed_out`, and closes the source handle. The core retains its description for client display and recording schemas; `SystemState` publishes the existing disconnect event. Connection-key and source-handle checks prevent cleanup or feedback from an old session from affecting its replacement. The node's own five-minute watchdog is a separate [safety layer](SAFETY.md).
 
 ## Changing this subsystem
 

@@ -741,7 +741,7 @@ def test_clear_tare_emits_event_and_removes_the_offset() -> None:
 def test_clear_tare_on_an_untared_sensor_is_a_no_op() -> None:
     state, _, _qlcp, _events = _make_state()
 
-    assert state.core.clear_tare("PT101") is None
+    assert state.core.clear_tare("PT101") is False
     assert state.state_version == 0
 
 
@@ -801,7 +801,7 @@ def test_kasa_control_has_only_its_existing_recording_column() -> None:
     assert [(entry.host, entry.alias) for entry in schema.kasa] == [("192.168.1.1", "Pump")]
     assert state.control_states() == {}
     assert state.kasa_active() == {"192.168.1.1": True}
-    assert len(state.core.controls(provider="kasa")) == 1
+    assert len(state.core.source("kasa", "192.168.1.1").controls) == 1
 
 
 def test_transport_health_is_sampled_live_without_advancing_state_version() -> None:

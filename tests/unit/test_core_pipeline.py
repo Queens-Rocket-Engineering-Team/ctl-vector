@@ -55,15 +55,14 @@ def test_sensor_provider_reaches_raw_display_tare_and_recording(tmp_path: Path) 
         writer = SessionTelemetryWriter.open(tmp_path / "telemetry.csv", state, build_columns(state.recording_schema()))
         recording = TelemetrySessionPublisher()
         recording.attach(writer)
-        unsubscribe = [
-            core.subscribe_samples(raw.publish_batch),
-            core.subscribe_samples(display.publish_batch),
-            core.subscribe_samples(recording.publish_batch),
-        ]
+        core.subscribe_samples(raw.publish_batch)
+        core.subscribe_samples(display.publish_batch)
+        core.subscribe_samples(recording.publish_batch)
 
         source.publish_samples([("PAD_RSSI", -62.0)], 1.1)
         source.publish_samples([("PAD_RSSI", -60.0)], 1.2)
-        assert core.capture_tare("PAD_RSSI", samples=2) == (-61.0, "Pad antenna", 2)
+        assert core.capture_tare_offset("PAD_RSSI", samples=2) == (-61.0, "Pad antenna", 2)
+        core.set_tare("PAD_RSSI", -61.0)
         source.publish_samples([("PAD_RSSI", -59.0)], 2.1)
         latest = source.publish_samples([("PAD_RSSI", -58.0)], 3.1)
 
@@ -92,8 +91,6 @@ def test_sensor_provider_reaches_raw_display_tare_and_recording(tmp_path: Path) 
         assert not source.connected
         assert source.publish_samples([("PAD_RSSI", 99.0)], 4.1) is None
         assert writer.rows == 4
-        for close in unsubscribe:
-            close()
         recording.detach()
         writer.close()
         for client in clients:
@@ -115,7 +112,7 @@ def test_new_provider_preserves_frozen_recording_and_uses_late_file(tmp_path: Pa
     state = SystemState(core=core)
     antenna = core.register_source("wireless", "pad", name="Pad", sensors=(SensorDefinition("PAD_RSSI", unit="dBm"),))
     writer = SessionTelemetryWriter.open(tmp_path / "telemetry.csv", state, build_columns(state.recording_schema()))
-    unsubscribe = core.subscribe_samples(writer.write_batch)
+    core.subscribe_samples(writer.write_batch)
     antenna.publish_samples([("PAD_RSSI", -62.0)], 1.0)
 
     latency = core.register_source("poller", "latency", name="Latency", sensors=(SensorDefinition("PAD_LATENCY", unit="ms"),))
@@ -124,7 +121,6 @@ def test_new_provider_preserves_frozen_recording_and_uses_late_file(tmp_path: Pa
     assert {sensor.name for sensor in state.recording_schema().sensors} == {"PAD_RSSI", "PAD_LATENCY"}
     assert writer.rows == 1
     assert writer.late_files == ("telemetry_late.csv",)
-    unsubscribe()
     writer.close()
 
     assert (tmp_path / "telemetry.csv").read_text() == (
@@ -149,10 +145,9 @@ def test_recorded_rows_distinguish_sources_with_the_same_name(
     state = SystemState(core=core)
     sources = [core.register_source(*identity, name="Shared", sensors=(SensorDefinition("VALUE"),)) for identity in identities]
     writer = SessionTelemetryWriter.open(tmp_path / "telemetry.csv", state, build_columns(state.recording_schema()))
-    unsubscribe = core.subscribe_samples(writer.write_batch)
+    core.subscribe_samples(writer.write_batch)
     for index, source in enumerate(sources, start=1):
         source.publish_samples([("VALUE", index)], index)
-    unsubscribe()
     writer.close()
 
     assert writer.late_files == ()
@@ -173,7 +168,7 @@ def test_late_sources_with_the_same_name_keep_every_reading(
     state = SystemState(core=core)
     initial = core.register_source("initial", "device", sensors=(SensorDefinition("BASE"),))
     writer = SessionTelemetryWriter.open(tmp_path / "telemetry.csv", state, build_columns(state.recording_schema()))
-    unsubscribe = core.subscribe_samples(writer.write_batch)
+    core.subscribe_samples(writer.write_batch)
     initial.publish_samples([("BASE", 1.0)], 1.0)
     first = core.register_source(*identities[0], name="Shared", sensors=(SensorDefinition("FIRST"),))
     first.publish_samples([("FIRST", 11.0)], 2.0)
@@ -181,7 +176,6 @@ def test_late_sources_with_the_same_name_keep_every_reading(
     second.publish_samples([("SECOND", 21.0)], 3.0)
     first.publish_samples([("FIRST", 12.0)], 4.0)
     second.publish_samples([("SECOND", 22.0)], 5.0)
-    unsubscribe()
     writer.close()
 
     assert writer.rows == 1
@@ -200,7 +194,7 @@ def test_late_source_rename_and_repeated_schema_changes_reuse_only_compatible_fi
     state = SystemState(core=core)
     initial = core.register_source("initial", "device", sensors=(SensorDefinition("BASE"),))
     writer = SessionTelemetryWriter.open(tmp_path / "telemetry.csv", state, build_columns(state.recording_schema()))
-    unsubscribe = core.subscribe_samples(writer.write_batch)
+    core.subscribe_samples(writer.write_batch)
     initial.publish_samples([("BASE", 1.0)], 1.0)
 
     source = core.register_source("poller", "link", name="Original", sensors=(SensorDefinition("A"),))
@@ -218,7 +212,6 @@ def test_late_source_rename_and_repeated_schema_changes_reuse_only_compatible_fi
     # can still write into that compatible schema without overwriting earlier rows.
     source = core.register_source("poller", "link", name="Restored", sensors=(SensorDefinition("A"),))
     source.publish_samples([("A", 13.0)], 7.0)
-    unsubscribe()
     writer.flush_if_dirty()
 
     assert writer.late_files == ("telemetry_late.csv", "telemetry_late_2.csv", "telemetry_late_3.csv")

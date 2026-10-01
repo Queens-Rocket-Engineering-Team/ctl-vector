@@ -60,10 +60,9 @@ async def set_tare(
         if not math.isfinite(body.offset):
             raise HTTPException(400, "offset must be a finite number.")
         offset = body.offset
-        rt.core.set_tare(body.sensor_name, offset)
     else:
         try:
-            offset, sampled_device, sample_count = rt.core.capture_tare(
+            offset, sampled_device, sample_count = rt.core.capture_tare_offset(
                 body.sensor_name,
                 device_name=body.device_name,
                 samples=body.samples,
@@ -71,6 +70,7 @@ async def set_tare(
         except TareCaptureError as exc:
             raise HTTPException(409, str(exc)) from None
 
+    rt.core.set_tare(body.sensor_name, offset)
     logger.info("User tared sensor %s to offset %s (sampled %s readings from %s)", body.sensor_name, offset, sample_count, sampled_device)
 
     return TareInfo(
@@ -89,11 +89,10 @@ async def clear_tare(
     # JSON keys and may contain characters that do not survive a path.
     sensor_name: Annotated[str, Query(min_length=1)],
 ) -> TareInfo:
-    event = rt.core.clear_tare(sensor_name)
-    if event is None:
-        logger.info("User cleared tare for %s, which was not tared", sensor_name)
-    else:
+    if rt.core.clear_tare(sensor_name):
         logger.info("User cleared tare for sensor %s", sensor_name)
+    else:
+        logger.info("User cleared tare for %s, which was not tared", sensor_name)
 
     return TareInfo(
         sensor_name=sensor_name,

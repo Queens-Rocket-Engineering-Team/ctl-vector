@@ -7,23 +7,16 @@ Transport diagnostics are supplied as read-only scalar views by their adapters.
 
 from __future__ import annotations
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from vector.core import ControlBinding, ControlDefinition, ControlValue, Core, CoreChange, SensorDefinition, Source
+    from vector.runtime.qlcp_state import CommandProjection
 
 StateEvent = dict[str, object]
-
-
-class CommandView(Protocol):
-    """Read-only command diagnostics; the transport keeps its existing tracker."""
-
-    def snapshot(self) -> dict[str, Any]: ...
-
-    def pending_command_id(self, connection_key: str, control_id: int) -> int | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +78,7 @@ class SystemState:
         self._session: _SessionStateRecord | None = None
         self._state_version = 0
         self._publisher: Callable[[StateEvent], None] | None = None
-        self._command_view: CommandView | None = None
+        self._command_view: CommandProjection | None = None
         self._health: Callable[[Source], tuple[float | None, int]] = lambda _source: (None, 0)
         core.subscribe_changes(self._on_core_change)
 
@@ -99,7 +92,7 @@ class SystemState:
     def set_transport_views(
         self,
         *,
-        commands: CommandView,
+        commands: CommandProjection,
         health: Callable[[Source], tuple[float | None, int]],
     ) -> None:
         self._command_view = commands

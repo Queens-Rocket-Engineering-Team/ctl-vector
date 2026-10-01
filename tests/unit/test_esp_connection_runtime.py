@@ -582,6 +582,33 @@ def test_runtime_status_error_preserves_last_known_state() -> None:
     assert stream.events[-1]["type"] == "control.error"
 
 
+def test_runtime_status_with_mismatched_type_marks_error_and_keeps_the_node() -> None:
+    """STATUS carries its own per-control type; one that disagrees with CONFIG must not drop the session."""
+    runtime, _tracker, state, stream = _make_runtime()
+    device = _make_session(runtime)
+    runtime.devices.register(device)
+    runtime.state_adapter.register_device(device)
+
+    runtime.handle_status(
+        device,
+        StatusPacket(
+            header=PacketHeader(sequence=1, timestamp_us=0),
+            ack_packet_type=PacketType.NO_ACK,
+            ack_sequence=0,
+            control_states=[
+                ControlStatus(id=0, type=ControlType.UINT32, state=1),  # VALVE1 is declared BOOL
+                ControlStatus(id=1, type=ControlType.UINT32, state=75),
+            ],
+        ),
+    )
+
+    valve, heater, _ = state.snapshot()["devices"][0]["controls"]
+    assert (valve["reported_state"], valve["reported_status"]) == (None, "error")
+    assert (heater["reported_state"], heater["reported_status"]) == ("75", "confirmed")
+    assert runtime.devices.by_address(device.address) is device
+    assert [event["type"] for event in stream.events[-2:]] == ["control.error", "control.updated"]
+
+
 def test_runtime_status_pending_control_is_not_settled() -> None:
     runtime, _tracker, state, _stream = _make_runtime()
     device = _make_session(runtime)
@@ -821,7 +848,7 @@ def test_core_dispatches_duplicate_control_names_to_distinct_wire_ids() -> None:
         }
         device = _make_session(runtime, config_dict=config)
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
-        targets = state.core.controls("shared", provider="qlcp")
+        targets = device.core_source.controls
 
         outcomes = [await state.core.set_control(target, True) for target in targets]
 
@@ -863,7 +890,7 @@ def test_core_dispatch_preserves_types_of_same_named_control_bindings() -> None:
         }
         device = _make_session(runtime, config_dict=config)
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
-        boolean, integer = state.core.controls("SHARED", provider="qlcp")
+        boolean, integer = device.core_source.controls
 
         bool_result = await state.core.set_control(boolean, True)
         int_result = await state.core.set_control(integer, -25)

@@ -15,7 +15,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from vector.core.models import (
     ControlBinding,
@@ -48,10 +48,6 @@ _Binding = TypeVar("_Binding", SensorBinding, ControlBinding)
 class TareCaptureError(Exception):
     """Missing, ambiguous, or non-finite recent samples prevented tare capture."""
 
-    def __init__(self, message: str, *, candidates: tuple[str, ...] = ()) -> None:
-        super().__init__(message)
-        self.candidates = candidates
-
 
 class ControlValidationError(ValueError):
     """The requested value is invalid for at least one target; nothing was sent."""
@@ -81,7 +77,6 @@ class Source:
         name: str,
         address: str,
         connection_key: str,
-        generation: int,
         sensors: Sequence[SensorDefinition],
         controls: Sequence[ControlDefinition],
         control_handler: ControlHandler | None,
@@ -94,7 +89,6 @@ class Source:
         self.name = name
         self.address = address
         self.connection_key = connection_key
-        self.generation = generation
         self.metadata = MappingProxyType(dict(metadata))
         self.sensors = tuple(SensorBinding(self, definition, i) for i, definition in enumerate(sensors))
         self.controls = tuple(ControlBinding(self, definition, i) for i, definition in enumerate(controls))
@@ -123,12 +117,6 @@ class Source:
     def control(self, name: str) -> ControlBinding | None:
         """Look up a name ignoring case; use ``controls`` to retain duplicate bindings."""
         return self._controls.get(name.upper())
-
-    def accepted_control(self, control: ControlBinding) -> ControlObservation | None:
-        return self._accepted.get(control.id)
-
-    def reported_control(self, control: ControlBinding) -> ControlObservation | None:
-        return self._reported.get(control.id)
 
     def _resolve_control(self, name: str | ControlBinding) -> ControlBinding | None:
         if isinstance(name, str):
@@ -162,45 +150,50 @@ class Source:
         *,
         status: ControlStatus | str = ControlStatus.CONFIRMED,
         now: float | None = None,
-    ) -> CoreChange | None:
-        """Report hardware feedback, retaining the last known value on an error."""
-        if not self._core._is_current(self):
-            return None
+    ) -> None:
+        """Report hardware feedback, retaining the last known value on an error.
+
+        A reported value never raises: one that does not fit the declared type
+        is recorded as an error so the operator sees the fault and the
+        provider's feedback loop keeps running.
+        """
         control = self._resolve_control(name)
-        if control is None:
-            return None
+        if control is None or not self._core._is_current(self):
+            return
         status = ControlStatus(status)
+        if status != ControlStatus.ERROR and value is not None:
+            try:
+                value = _validated_value(control, value)
+            except ControlValidationError:
+                logger.exception("Source %r reported an invalid control value; recording an error.", self.name)
+                status = ControlStatus.ERROR
         if status == ControlStatus.ERROR:
             previous = control.reported
             value = previous.value if previous is not None else None
-        elif value is not None:
-            value = _validated_value(control, value)
         self._reported[control.id] = ControlObservation(
             value=value,
             timestamp=time.monotonic() if now is None else now,
             status=status,
         )
-        return self._core._changed(CoreChange("control.reported", source=self, control=control))
+        self._core._changed(CoreChange("control.reported", source=self, control=control))
 
-    def accept_control(self, name: str | ControlBinding, value: ControlValue, *, now: float | None = None) -> CoreChange | None:
+    def accept_control(self, name: str | ControlBinding, value: ControlValue, *, now: float | None = None) -> None:
         """Record provider acceptance, independently of the reported physical state."""
-        if not self._core._is_current(self):
-            return None
         control = self._resolve_control(name)
-        if control is None:
-            return None
+        if control is None or not self._core._is_current(self):
+            return
         self._accepted[control.id] = ControlObservation(
             value=_validated_value(control, value),
             timestamp=time.monotonic() if now is None else now,
         )
-        return self._core._changed(CoreChange("control.accepted", source=self, control=control))
+        self._core._changed(CoreChange("control.accepted", source=self, control=control))
 
-    def close(self) -> CoreChange | None:
+    def close(self) -> None:
         """Disable this source's routing while retaining declarations and last state."""
         if not self._core._is_current(self):
-            return None
+            return
         self._retire()
-        return self._core._changed(CoreChange("source.closed", source=self))
+        self._core._changed(CoreChange("source.closed", source=self))
 
     def _retire(self) -> None:
         self._connected = False
@@ -216,8 +209,8 @@ class Core:
         self._next_generation = 0
         self._tares: dict[str, float] = {}
         self._history: dict[tuple[Source, str], _SampleBuffer] = {}
-        self._sample_subscribers: list[_Subscription[TelemetryBatch]] = []
-        self._change_subscribers: list[_Subscription[CoreChange]] = []
+        self._sample_subscribers: list[Callable[[TelemetryBatch], None]] = []
+        self._change_subscribers: list[Callable[[CoreChange], None]] = []
 
     def register_source(
         self,
@@ -250,7 +243,6 @@ class Core:
             name=key if name is None else name,
             address=address,
             connection_key=connection_key or f"{provider}:{key}:{self._next_generation}",
-            generation=self._next_generation,
             sensors=sensors,
             controls=controls,
             control_handler=control_handler,
@@ -274,14 +266,6 @@ class Core:
     def sensors(self, name: str | None = None) -> tuple[SensorBinding, ...]:
         return tuple(sensor for source in self.sources() for sensor in source.sensors if name is None or sensor.name == name)
 
-    def controls(self, name: str | None = None, *, provider: str | None = None) -> tuple[ControlBinding, ...]:
-        return tuple(
-            control
-            for source in self.sources(provider)
-            for control in source.controls
-            if name is None or control.name.upper() == name.upper()
-        )
-
     async def set_control(self, target: ControlBinding, value: ControlValue) -> DispatchResult:
         """Validate one explicit target and value, then report the provider's submission.
 
@@ -304,31 +288,30 @@ class Core:
             return DispatchResult(False, error=str(exc), cause=exc, target=target)
         return replace(outcome, target=target)
 
-    def subscribe_samples(self, callback: Callable[[TelemetryBatch], None]) -> Callable[[], None]:
-        """Receive future batches inline; queue slow work and unsubscribe on teardown.
+    def subscribe_samples(self, callback: Callable[[TelemetryBatch], None]) -> None:
+        """Receive future batches inline for the core's lifetime; queue slow work. No history is replayed."""
+        self._sample_subscribers.append(callback)
 
-        No history is replayed. The returned unsubscribe function is idempotent.
-        """
-        return _subscribe(self._sample_subscribers, callback)
-
-    def subscribe_changes(self, callback: Callable[[CoreChange], None]) -> Callable[[], None]:
+    def subscribe_changes(self, callback: Callable[[CoreChange], None]) -> None:
         """Receive future catalog/state changes inline, with the same rules as samples."""
-        return _subscribe(self._change_subscribers, callback)
+        self._change_subscribers.append(callback)
 
     def tares(self) -> dict[str, float]:
         return dict(sorted(self._tares.items()))
 
-    def set_tare(self, sensor_name: str, offset: float) -> CoreChange:
+    def set_tare(self, sensor_name: str, offset: float) -> None:
         """Share the exact-name offset across sources; apply it to subsequent readings."""
         if not math.isfinite(offset):
             raise ValueError("Tare offset must be finite.")
         self._tares[sensor_name] = offset
-        return self._changed(CoreChange("tare.updated", sensor_name=sensor_name, offset=offset))
+        self._changed(CoreChange("tare.updated", sensor_name=sensor_name, offset=offset))
 
-    def clear_tare(self, sensor_name: str) -> CoreChange | None:
+    def clear_tare(self, sensor_name: str) -> bool:
+        """Remove an offset; return False if the sensor was not tared."""
         if self._tares.pop(sensor_name, None) is None:
-            return None
-        return self._changed(CoreChange("tare.cleared", sensor_name=sensor_name))
+            return False
+        self._changed(CoreChange("tare.cleared", sensor_name=sensor_name))
+        return True
 
     def capture_tare_offset(
         self,
@@ -340,8 +323,8 @@ class Core:
         """Compute ``(offset, source_name, count)`` from recent raw samples.
 
         ``device_name`` accepts a display name or ``provider:key`` to select a
-        source. Ambiguous, stale, or non-finite captures raise TareCaptureError
-        without changing the tare; use ``set_tare`` to apply a successful result.
+        source. Ambiguous, stale, or non-finite captures raise TareCaptureError;
+        use ``set_tare`` to apply a successful result.
         """
         if samples < 1:
             raise TareCaptureError("samples must be >= 1.")
@@ -364,7 +347,7 @@ class Core:
             if len(set(names)) != len(names):
                 names = tuple(sorted(f"{source.provider}:{source.key}" for source, _ in candidates))
             message = f"Sensor {sensor_name!r} is reported by multiple devices ({', '.join(names)}); specify which to sample from."
-            raise TareCaptureError(message, candidates=names)
+            raise TareCaptureError(message)
         source, buffer = candidates[0]
         window = list(buffer.values)[-samples:]
         offset = sum(window) / len(window)
@@ -372,18 +355,6 @@ class Core:
             message = f"Cannot capture a tare for sensor {sensor_name!r}: recent readings produced a non-finite offset."
             raise TareCaptureError(message)
         return offset, source.name, len(window)
-
-    def capture_tare(
-        self,
-        sensor_name: str,
-        *,
-        device_name: str | None = None,
-        samples: int = TARE_DEFAULT_SAMPLES,
-    ) -> tuple[float, str, int]:
-        """Capture and apply an offset; callers needing separate events can use the two methods."""
-        captured = self.capture_tare_offset(sensor_name, device_name=device_name, samples=samples)
-        self.set_tare(sensor_name, captured[0])
-        return captured
 
     def _is_current(self, source: Source) -> bool:
         return source.connected and self._sources.get((source.provider, source.key)) is source
@@ -437,9 +408,8 @@ class Core:
         _notify(self._sample_subscribers, batch)
         return batch
 
-    def _changed(self, change: CoreChange) -> CoreChange:
+    def _changed(self, change: CoreChange) -> None:
         _notify(self._change_subscribers, change)
-        return change
 
 
 def _validated_value(target: ControlBinding, value: ControlValue) -> ControlValue:
@@ -464,31 +434,10 @@ def _owns(bindings: tuple[_Binding, ...], binding: _Binding) -> bool:
     return 0 <= binding.id < len(bindings) and bindings[binding.id] is binding
 
 
-@dataclass(slots=True, eq=False)
-class _Subscription(Generic[_Notification]):
-    # Identity equality keeps duplicate subscriptions independent, even for the same callback.
-    callback: Callable[[_Notification], None]
-
-
-def _subscribe(
-    subscribers: list[_Subscription[_Notification]],
-    callback: Callable[[_Notification], None],
-) -> Callable[[], None]:
-    subscription = _Subscription(callback)
-    subscribers.append(subscription)
-
-    def unsubscribe() -> None:
-        if subscription in subscribers:
-            subscribers.remove(subscription)
-
-    return unsubscribe
-
-
-def _notify(subscribers: list[_Subscription[_Notification]], value: _Notification) -> None:
-    # Callbacks may unsubscribe during delivery; one broken consumer must not stop
-    # the remaining consumers from receiving the same update.
-    for subscription in tuple(subscribers):
+def _notify(subscribers: list[Callable[[_Notification], None]], value: _Notification) -> None:
+    # One broken consumer must not stop the remaining consumers from receiving the same update.
+    for callback in subscribers:
         try:
-            subscription.callback(value)
+            callback(value)
         except Exception:
             logger.exception("Core subscriber failed")

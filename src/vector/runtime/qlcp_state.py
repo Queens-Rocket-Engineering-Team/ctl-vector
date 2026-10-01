@@ -5,7 +5,7 @@ It retains sessions for live transport health; SystemState receives scalar views
 """
 
 from __future__ import annotations
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from vector.core import ControlDefinition, ControlStatus, ControlType, SensorDefinition
 from vector.qlcp.enums import ControlConfirmStatus, ControlState, PacketType
@@ -18,6 +18,10 @@ if TYPE_CHECKING:
     from vector.runtime.esp_connection_runtime import ESPDeviceSession
 
 
+@overload
+def to_core_value(value: ControlState | ControlValue) -> ControlValue: ...
+@overload
+def to_core_value(value: None) -> None: ...
 def to_core_value(value: ControlState | ControlValue | None) -> ControlValue | None:
     """Map the QLCP wire state to the core's typed value; BOOL controls become bools."""
     if isinstance(value, ControlState):

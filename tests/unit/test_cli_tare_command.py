@@ -46,7 +46,7 @@ def test_tare_passes_an_explicit_sample_count() -> None:
 
     _run(runtime, "PT101", "200")
 
-    runtime.core.capture_tare_offset.assert_called_once_with("PT101", device_name=None, samples=200)
+    runtime.core.capture_tare_offset.assert_called_once_with("PT101", samples=200)
 
 
 def test_tare_clear_removes_the_offset() -> None:

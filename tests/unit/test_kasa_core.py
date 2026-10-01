@@ -109,7 +109,7 @@ def test_reports_readback_even_when_it_differs_from_requested_value(monkeypatch:
 
         assert returned is device
         assert device.writes == [True]
-        power, = core.controls(provider="kasa")
+        power, = core.source("kasa", device.host).controls
         assert power.reported is not None
         assert power.reported.value is False
 

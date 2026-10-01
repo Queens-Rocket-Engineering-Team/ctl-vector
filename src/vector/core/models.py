@@ -107,11 +107,11 @@ class ControlBinding:
 
     @property
     def accepted(self) -> ControlObservation | None:
-        return self.source.accepted_control(self)
+        return self.source._accepted.get(self.id)  # noqa: SLF001
 
     @property
     def reported(self) -> ControlObservation | None:
-        return self.source.reported_control(self)
+        return self.source._reported.get(self.id)  # noqa: SLF001
 
 
 @dataclass(frozen=True, slots=True)

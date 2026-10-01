@@ -26,10 +26,10 @@ Import public types from `vector.core`. The implementation is split into [models
 | Provider | `source.publish_samples(samples, timestamp_s=...)` | Submits raw physical-unit values as `(sensor_name, value)` or `(sensor_binding, value)` pairs. |
 | Provider | `source.report_control(...)`, `source.accept_control(...)` | Updates observed hardware state or accepted requests separately. |
 | Provider | `source.close()` | Disables its publishing and commands while retaining descriptions and last-known state. |
-| Consumer | `core.sources()`, `sensors()`, `controls()` | Reads the catalog, including source identity and availability. |
-| Consumer | `core.subscribe_samples(callback)`, `subscribe_changes(callback)` | Receives synchronous updates; returns an unsubscribe function. |
+| Consumer | `core.source()`, `sources()`, `sensors()`, then `source.controls` | Reads the catalog, including source identity and availability. |
+| Consumer | `core.subscribe_samples(callback)`, `subscribe_changes(callback)` | Receives synchronous updates for the core's lifetime. |
 | Command caller | `await core.set_control(target, value)` | Validates one explicit target and value, then returns its `DispatchResult`. |
-| Tare caller | `core.capture_tare(...)`, `set_tare(...)`, `clear_tare(...)`, `tares()` | Shares an offset across sources reporting the exact sensor name. |
+| Tare caller | `core.capture_tare_offset(...)`, `set_tare(...)`, `clear_tare(...)`, `tares()` | Computes an offset from recent raw samples, then shares it across sources reporting the exact sensor name. Capture does not apply the offset; `set_tare` does. |
 
 Control values are `bool`, `int`, or `float`; `ControlType` has `BOOL`, `UINT32`, `INT32`, and `FLOAT32` members. The QLCP adapter translates OPEN/CLOSED into booleans. Kasa declares a boolean `power` control with no default.
 
@@ -39,7 +39,7 @@ Bindings have an ordinal within their source's declaration list. The QLCP adapte
 
 All calls run on the existing asyncio loop. Subscription callbacks must return promptly. Stream consumers queue messages, the display consumer downsamples, and the recorder performs buffered writes. Callbacks do not become independent tasks automatically.
 
-Pass the existing core into a new service from `build_runtime()`; create a separate `Core()` only for an isolated test or tool. Subscribe once when a consumer starts and keep the unsubscribe function for cleanup. Subscriptions send future updates only.
+Pass the existing core into a new service from `build_runtime()`; create a separate `Core()` only for an isolated test or tool. Subscribe once when a consumer starts. A subscription lasts for the core's lifetime and sends future updates only; a consumer that needs to pause, such as the recorder, does so on its own side.
 
 Subscribers observe; they must not call `set_control`. A sensor reading can inform an operator or block a command, but it never issues one.
 
@@ -65,11 +65,10 @@ def demonstrate_provider(core: Core) -> None:
         name="Pad antenna",
         sensors=[SensorDefinition("PAD_RSSI", group="radio", unit="dBm")],
     )
-    unsubscribe = core.subscribe_samples(lambda batch: print(batch.readings))
+    core.subscribe_samples(lambda batch: print(batch.readings))
     try:
         source.publish_samples([("PAD_RSSI", -62.0)], timestamp_s=time.monotonic())
     finally:
-        unsubscribe()
         source.close()
 ```
 
@@ -83,10 +82,14 @@ Changing a tare affects future samples and does not fabricate a fresh reading. T
 
 ## A control request from API to feedback
 
+`core.set_control()` is the single gate for actuation. Every QLCP CONTROL and Kasa power command passes through it, whichever endpoint or CLI command the operator used, so a guard that refuses a command has one place to live. The provider-specific entry points (`ESPConnectionRuntime.set_control`, `KasaRuntime.set_state`) resolve their targets and then call the gate. The Kasa HTTP endpoint is a compatibility wrapper; its intended replacement is one generic control endpoint over this call.
+
+ESTOP does not pass through the gate. The QLCP runtime sends it directly, so a guard added here can never refuse an abort. Keep it that way.
+
 1. The API or CLI resolves its existing target scope and converts operator input into a typed value. QLCP REST requests still target matching node controls; Kasa requests still target a selected plug.
 2. `core.set_control()` validates the selected binding and value before invoking the provider. It calls the registered async `handler(binding, value)` with that exact binding and returns the handler's `DispatchResult`, including a QLCP command ID when available. An unavailable source or a failed handler returns a failure result. If the source closes while the handler awaits I/O, the handler's result still stands: a command that was sent is reported as sent.
 3. The QLCP handler maps the binding's declaration ordinal to its wire control ID, then builds and sends CONTROL through the existing command tracker. This preserves distinct targets even when a node declares the same name in different groups. The Kasa handler writes power and refreshes the device to read it back.
-4. Hardware feedback enters through `source.report_control()`. QLCP response correlation stays in its adapter and tracker; accepted requests and reported `confirmed`, `pending`, or `error` states remain distinct from successful transmission.
+4. Hardware feedback enters through `source.report_control()`. QLCP response correlation stays in its adapter and tracker; accepted requests and reported `confirmed`, `pending`, or `error` states remain distinct from successful transmission. A reported value never raises: one that does not fit the control's declared type is logged and recorded with `error` status, keeping the last known value, so the operator sees the fault and the provider's connection stays up.
 5. `SystemState` translates core changes into the existing GUI snapshots and events. It reads command history from the existing QLCP tracker rather than maintaining a second history.
 
 A service requesting an actuation can use `core.source(provider, key)`, then `source.control(name)` to select a target. Both lookups can return `None`. Pass the binding to `await core.set_control(target, value)` and inspect the returned result's `submitted` and `error` fields. Queries include disconnected sources; dispatch reports these as unavailable.
