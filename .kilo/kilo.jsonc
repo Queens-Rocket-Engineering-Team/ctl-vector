@@ -1,0 +1,9 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "mcp": {
+    "jupyter": {
+      "type": "remote",
+      "url": "https://developers.jup.ag/docs/mcp"
+    }
+  }
+}
