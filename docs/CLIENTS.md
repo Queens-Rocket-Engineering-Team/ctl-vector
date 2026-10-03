@@ -54,7 +54,7 @@ Key sources by `(source_provider, source_key)`, not by the display label: differ
 
 There are several distinct observations along a command's path:
 
-- The REST result (`sent`, `partial`, or an error) describes transmission to the selected nodes. It does not wait for a device response or return the tracker command IDs.
+- The `/v1/command` result (`sent`, `partial`, or an error) describes transmission to the selected nodes and does not return tracker command IDs. `/v1/control` returns the command ID for its single target. Neither waits for a device response.
 - A `command.acked` event means the tracked response arrived. For CONTROL, this is normally a correlated QLCP STATUS packet, even though the lifecycle name says `acked`.
 - `reported_state` and `reported_status` describe the node's report. `pending` means the node reports ongoing actuation; `error` preserves the last known value while reporting the fault.
 
