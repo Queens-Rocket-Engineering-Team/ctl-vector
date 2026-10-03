@@ -5,6 +5,7 @@ import asyncio
 import logging
 import time
 from functools import partial
+from typing import NamedTuple
 
 from kasa import Device, Discover, KasaException
 
@@ -14,24 +15,29 @@ from vector.core import ControlBinding, ControlDefinition, ControlObservation, C
 logger = logging.getLogger(__name__)
 
 
+class _KasaEntry(NamedTuple):
+    device: Device
+    source: Source
+
+
 class KasaRuntime:
     def __init__(self, *, core: Core) -> None:
         self.core = core
-        self._registry: dict[str, tuple[Device, Source]] = {}
+        self._registry: dict[str, _KasaEntry] = {}
 
     def get_device(self, host: str) -> Device | None:
         entry = self._registry.get(host)
-        return entry[0] if entry is not None else None
+        return entry.device if entry is not None else None
 
     async def get_devices(self) -> list[Device]:
         entries = list(self._registry.values())
-        await asyncio.gather(*(dev.update() for dev, _ in entries))
+        await asyncio.gather(*(entry.device.update() for entry in entries))
         for dev, source in entries:
             if source.connected:
                 control = source.control("power")
                 if control is not None and (control.reported is None or control.reported.value != dev.is_on):
                     source.report_control("power", dev.is_on)
-        return [dev for dev, _ in entries]
+        return [entry.device for entry in entries]
 
     async def discover(self) -> None:
         try:
@@ -90,9 +96,9 @@ class KasaRuntime:
             control_handler=partial(self._write_power, dev),
             initial_controls={"power": ControlObservation(value=dev.is_on, timestamp=time.monotonic(), status=ControlStatus.CONFIRMED)},
         )
-        self._registry[dev.host] = (dev, source)
+        self._registry[dev.host] = _KasaEntry(dev, source)
 
-    def _require_device(self, host: str) -> tuple[Device, Source]:
+    def _require_device(self, host: str) -> _KasaEntry:
         entry = self._registry.get(host)
         if entry is None:
             raise KeyError("No Kasa device found")
@@ -101,4 +107,4 @@ class KasaRuntime:
     def _remove_device(self, host: str) -> None:
         entry = self._registry.pop(host, None)
         if entry is not None:
-            entry[1].close()
+            entry.source.close()

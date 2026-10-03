@@ -15,7 +15,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import TypeVar
+from typing import NamedTuple, TypeVar
 
 from vector.core.models import (
     ControlBinding,
@@ -51,6 +51,14 @@ class TareCaptureError(Exception):
 
 class ControlValidationError(ValueError):
     """The requested value is invalid for at least one target; nothing was sent."""
+
+
+class TareCapture(NamedTuple):
+    """A computed offset and where it came from; apply it with ``Core.set_tare``."""
+
+    offset: float
+    source_name: str
+    sample_count: int
 
 
 @dataclass(slots=True)
@@ -319,8 +327,8 @@ class Core:
         *,
         device_name: str | None = None,
         samples: int = TARE_DEFAULT_SAMPLES,
-    ) -> tuple[float, str, int]:
-        """Compute ``(offset, source_name, count)`` from recent raw samples.
+    ) -> TareCapture:
+        """Average recent raw samples from one source into a ``TareCapture``.
 
         ``device_name`` accepts a display name or ``provider:key`` to select a
         source. Ambiguous, stale, or non-finite captures raise TareCaptureError;
@@ -354,7 +362,7 @@ class Core:
         if not math.isfinite(offset):
             message = f"Cannot capture a tare for sensor {sensor_name!r}: recent readings produced a non-finite offset."
             raise TareCaptureError(message)
-        return offset, source.name, len(window)
+        return TareCapture(offset, source.name, len(window))
 
     def _is_current(self, source: Source) -> bool:
         return source.connected and self._sources.get((source.provider, source.key)) is source

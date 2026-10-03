@@ -7,7 +7,7 @@ Transport diagnostics are supplied as read-only scalar views by their adapters.
 
 from __future__ import annotations
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 
 if TYPE_CHECKING:
@@ -17,6 +17,13 @@ if TYPE_CHECKING:
     from vector.runtime.qlcp_state import CommandProjection
 
 StateEvent = dict[str, object]
+
+
+class TransportHealth(NamedTuple):
+    """Live connection diagnostics an adapter samples for one source."""
+
+    last_sync_time: float | None
+    consecutive_misses: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +86,7 @@ class SystemState:
         self._state_version = 0
         self._publisher: Callable[[StateEvent], None] | None = None
         self._command_view: CommandProjection | None = None
-        self._health: Callable[[Source], tuple[float | None, int]] = lambda _source: (None, 0)
+        self._health: Callable[[Source], TransportHealth] = lambda _source: TransportHealth(None, 0)
         core.subscribe_changes(self._on_core_change)
 
     @property
@@ -93,7 +100,7 @@ class SystemState:
         self,
         *,
         commands: CommandProjection,
-        health: Callable[[Source], tuple[float | None, int]],
+        health: Callable[[Source], TransportHealth],
     ) -> None:
         self._command_view = commands
         self._health = health
@@ -193,7 +200,6 @@ class SystemState:
         return {**source_identity(source), **asdict(self._kasa_state(source))}
 
     def _snapshot_device(self, source: Source) -> dict[str, Any]:
-        last_sync_time, _ = self._health(source)
         return {
             **source_identity(source),
             "name": source.name,
@@ -204,7 +210,7 @@ class SystemState:
                 for sensor in source.sensors
             ],
             "controls": [self._snapshot_control(control) for control in source.controls],
-            "last_sync_time": last_sync_time,
+            "last_sync_time": self._health(source).last_sync_time,
             "heartbeat": self.snapshot_heartbeat(source),
         }
 
@@ -234,7 +240,7 @@ class SystemState:
         }
 
     def snapshot_heartbeat(self, source: Source) -> dict[str, Any]:
-        _, misses = self._health(source)
+        misses = self._health(source).consecutive_misses
         state = "disconnected" if not source.connected else "missed" if misses else "ok"
         return {"state": state, "consecutive_misses": misses}
 

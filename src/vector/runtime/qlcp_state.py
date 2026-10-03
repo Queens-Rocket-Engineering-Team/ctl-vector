@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, overload
 from vector.core import ControlDefinition, ControlStatus, ControlType, SensorDefinition
 from vector.qlcp.enums import ControlConfirmStatus, ControlState, PacketType
 from vector.runtime.command_tracker import CommandRecord, CommandTracker, is_operator_visible
-from vector.state.system_state import StateEvent, SystemState, control_state_name, source_identity
+from vector.state.system_state import StateEvent, SystemState, TransportHealth, control_state_name, source_identity
 
 
 if TYPE_CHECKING:
@@ -167,11 +167,11 @@ class QLCPStateAdapter:
         source = device.core_source
         return source.controls[control_id] if source is not None and 0 <= control_id < len(source.controls) else None
 
-    def _health(self, source: Source) -> tuple[float | None, int]:
+    def _health(self, source: Source) -> TransportHealth:
         device = self._sessions.get(source.key)
         if device is None or device.connection_key != source.connection_key:
-            return None, 0
-        return device.last_sync_time, device.missed_heartbeat_count
+            return TransportHealth(None, 0)
+        return TransportHealth(device.last_sync_time, device.missed_heartbeat_count)
 
     def record_command_sent(self, command: CommandRecord) -> StateEvent | None:
         return self._command_event("command.sent", command)

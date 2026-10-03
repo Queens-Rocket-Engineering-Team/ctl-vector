@@ -12,6 +12,7 @@ from vector.core.core import (
     ControlValidationError,
     Core,
     Source,
+    TareCapture,
     TareCaptureError,
 )
 from vector.core.models import (
@@ -49,6 +50,7 @@ __all__ = [
     "SensorBinding",
     "SensorDefinition",
     "Source",
+    "TareCapture",
     "TareCaptureError",
     "TelemetryBatch",
     "TelemetryReading",
