@@ -27,6 +27,17 @@ class ControlStatus(StrEnum):
     ERROR = "error"
 
 
+class ChangeKind(StrEnum):
+    """What a ``CoreChange`` notifies; consumers map these to their own event types."""
+
+    SOURCE_REGISTERED = "source.registered"
+    SOURCE_CLOSED = "source.closed"
+    CONTROL_ACCEPTED = "control.accepted"
+    CONTROL_REPORTED = "control.reported"
+    TARE_UPDATED = "tare.updated"
+    TARE_CLEARED = "tare.cleared"
+
+
 @dataclass(frozen=True, slots=True)
 class SensorDefinition:
     """A measurement in physical units; providers convert wire values before publishing."""
@@ -129,7 +140,7 @@ class DispatchResult:
 class CoreChange:
     """Synchronous state notification; consumers translate it into their own events."""
 
-    kind: str
+    kind: ChangeKind
     source: Source | None = None
     control: ControlBinding | None = None
     sensor_name: str | None = None

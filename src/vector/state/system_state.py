@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from vector.core import ChangeKind
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -255,25 +257,26 @@ class SystemState:
 
     def _on_core_change(self, change: CoreChange) -> None:
         source = change.source
-        if change.kind.startswith("tare."):
+        kind = change.kind
+        if kind in (ChangeKind.TARE_UPDATED, ChangeKind.TARE_CLEARED):
             payload: dict[str, object] = {"sensor_name": change.sensor_name}
-            if change.kind == "tare.updated":
+            if kind is ChangeKind.TARE_UPDATED:
                 payload["offset"] = change.offset
-            event = self.make_event(change.kind, **payload)
+            event = self.make_event(kind.value, **payload)
         elif source is None:
             return
         elif source.provider == "kasa":
             event_type = {
-                "source.registered": "kasa.registered",
-                "source.closed": "kasa.disconnected",
-                "control.reported": "kasa.updated",
-            }.get(change.kind)
+                ChangeKind.SOURCE_REGISTERED: "kasa.registered",
+                ChangeKind.SOURCE_CLOSED: "kasa.disconnected",
+                ChangeKind.CONTROL_REPORTED: "kasa.updated",
+            }.get(kind)
             if event_type is None:
                 return
             event = self.make_event(event_type, kasa=self._snapshot_kasa(source))
-        elif change.kind == "source.registered":
+        elif kind is ChangeKind.SOURCE_REGISTERED:
             event = self.make_event("device.registered", device=self._snapshot_device(source))
-        elif change.kind == "source.closed":
+        elif kind is ChangeKind.SOURCE_CLOSED:
             event = self.make_event(
                 "device.disconnected",
                 device_name=source.name,
@@ -282,7 +285,7 @@ class SystemState:
             )
         elif change.control is not None:
             control = change.control
-            if change.kind == "control.accepted":
+            if kind is ChangeKind.CONTROL_ACCEPTED:
                 event_type = "control.accepted"
             else:
                 event_type = "control.error" if control.reported and control.reported.status == "error" else "control.updated"

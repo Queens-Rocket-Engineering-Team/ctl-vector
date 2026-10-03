@@ -16,6 +16,7 @@ from vector.core.core import (
     TareCaptureError,
 )
 from vector.core.models import (
+    ChangeKind,
     ControlBinding,
     ControlDefinition,
     ControlObservation,
@@ -36,6 +37,7 @@ __all__ = [
     "TARE_DEFAULT_SAMPLES",
     "TARE_SAMPLE_CAPACITY",
     "TARE_SAMPLE_MAX_AGE_S",
+    "ChangeKind",
     "ControlBinding",
     "ControlDefinition",
     "ControlHandler",

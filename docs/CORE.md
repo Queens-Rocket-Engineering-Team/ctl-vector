@@ -31,6 +31,8 @@ Import public types from `vector.core`. The implementation is split into [models
 | Command caller | `await core.set_control(target, value)` | Validates one explicit target and value, then returns its `DispatchResult`. |
 | Tare caller | `core.capture_tare_offset(...)`, `set_tare(...)`, `clear_tare(...)`, `tares()` | Computes an offset from recent raw samples, then shares it across sources reporting the exact sensor name. Capture does not apply the offset; `set_tare` does. |
 
+A `CoreChange` carries a `ChangeKind` (`source.registered`, `source.closed`, `control.accepted`, `control.reported`, `tare.updated`, or `tare.cleared`) and the source, control, or sensor it concerns. `SystemState` translates these into the existing client event types.
+
 Control values are `bool`, `int`, or `float`; `ControlType` has `BOOL`, `UINT32`, `INT32`, and `FLOAT32` members. The QLCP adapter translates OPEN/CLOSED into booleans. Kasa declares a boolean `power` control with no default.
 
 A control's `default` describes device policy; registration does not send it or treat it as observed state. Supply `initial_controls` only when the provider already has observations, as Kasa does after discovery readback.
