@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from vector.core import ChangeKind
+from vector.core import ChangeKind, ControlStatus
 
 
 if TYPE_CHECKING:
@@ -239,7 +239,7 @@ class SystemState:
             "accepted_state": control_state_name(accepted.value) if accepted else None,
             "accepted_timestamp": accepted.timestamp if accepted else None,
             "pending_command_id": pending_id,
-            "settled": pending_id is None and reported_status != "pending",
+            "settled": pending_id is None and reported_status is not ControlStatus.PENDING,
         }
 
     def snapshot_heartbeat(self, source: Source) -> dict[str, Any]:
@@ -288,7 +288,7 @@ class SystemState:
             if kind is ChangeKind.CONTROL_ACCEPTED:
                 event_type = "control.accepted"
             else:
-                event_type = "control.error" if control.reported and control.reported.status == "error" else "control.updated"
+                event_type = "control.error" if control.reported and control.reported.status is ControlStatus.ERROR else "control.updated"
             event = self.make_event(event_type, device_name=source.name, control=self._snapshot_control(control), **source_identity(source))
         else:
             return

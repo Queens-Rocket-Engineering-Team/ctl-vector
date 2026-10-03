@@ -162,7 +162,7 @@ class QLCPStateAdapter:
     ) -> None:
         control = self._control_for(device, control_id)
         if control is not None:
-            control.source.report_control(control, to_core_value(state), status=ControlStatus(status.name.lower()), now=now)
+            control.source.report_control(control, to_core_value(state), status=ControlStatus[status.name], now=now)
 
     def record_accepted_control_state(
         self,
