@@ -51,7 +51,9 @@ class KasaRuntime:
         """Compatibility entry point used by the existing Kasa HTTP endpoint."""
         dev, source = self._require_device(host)
         target = source.control("power")
-        assert target is not None
+        if target is None:
+            message = f"Kasa source at {host} declares no power control."
+            raise RuntimeError(message)
         result = await self.core.set_control(target, active)
         if not result.submitted:
             if result.cause is not None:
