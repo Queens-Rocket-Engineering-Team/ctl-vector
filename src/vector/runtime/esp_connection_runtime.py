@@ -476,14 +476,17 @@ class ESPConnectionRuntime:
     async def _write_control(self, session: ESPDeviceSession, target: ControlBinding, value: ControlValue) -> DispatchResult:
         """Core callback: translate a typed value to QLCP and preserve its command ID."""
         control = session.qlcp_config.controls_by_id[target.id]
+        try:
+            packet = ControlPacket.create(control.id, control.type, control_state=to_qlcp_state(target.type, value))
+        except ValueError as exc:
+            # The value is wrong, not the connection: refuse without touching the session.
+            logger.warning("Refused CONTROL for %s on %s: %s", target.name, session.name, exc)
+            return DispatchResult(submitted=False, error=str(exc), cause=exc)
         if not session.is_connected:
             self.remove_device(session)
             return DispatchResult(submitted=False, error="Device is disconnected")
         try:
-            command = await self.send_tracked_command(
-                session,
-                ControlPacket.create(control.id, control.type, control_state=to_qlcp_state(value)),
-            )
+            command = await self.send_tracked_command(session, packet)
         except Exception as exc:
             logger.exception("Error sending CONTROL to %s", session.name)
             self.remove_device(session)

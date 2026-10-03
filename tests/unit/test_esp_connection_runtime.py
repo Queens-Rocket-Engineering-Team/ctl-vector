@@ -912,3 +912,24 @@ def test_core_dispatch_preserves_types_of_same_named_control_bindings() -> None:
         assert last_packet.control_state == 15
 
     asyncio.run(run())
+
+
+def test_out_of_range_setpoint_is_refused_without_dropping_the_node() -> None:
+    async def run() -> None:
+        runtime, tracker, state, _stream = _make_runtime()
+        device = _make_session(runtime)
+        runtime.devices.register(device)
+        runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
+        heater = device.core_source.control("HEATER1")  # declared UINT32
+
+        for value in (-1, 2**32):
+            result = await state.core.set_control(heater, value)
+            assert not result.submitted
+            assert "UINT32" in (result.error or "")
+
+        assert _sent_packets(device) == []
+        assert tracker.pending == ()
+        assert runtime.devices.by_address(device.address) is device
+        assert device.core_source.connected
+
+    asyncio.run(run())
