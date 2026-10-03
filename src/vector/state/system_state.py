@@ -86,7 +86,7 @@ class SystemState:
         self._state_version = 0
         self._publisher: Callable[[StateEvent], None] | None = None
         self._command_view: CommandProjection | None = None
-        self._health: Callable[[Source], TransportHealth] = lambda _source: TransportHealth(None, 0)
+        self._health: Callable[[Source], TransportHealth | None] = lambda _source: None
         core.subscribe_changes(self._on_core_change)
 
     @property
@@ -100,7 +100,7 @@ class SystemState:
         self,
         *,
         commands: CommandProjection,
-        health: Callable[[Source], TransportHealth],
+        health: Callable[[Source], TransportHealth | None],
     ) -> None:
         self._command_view = commands
         self._health = health
@@ -200,6 +200,7 @@ class SystemState:
         return {**source_identity(source), **asdict(self._kasa_state(source))}
 
     def _snapshot_device(self, source: Source) -> dict[str, Any]:
+        health = self._health(source)
         return {
             **source_identity(source),
             "name": source.name,
@@ -210,7 +211,7 @@ class SystemState:
                 for sensor in source.sensors
             ],
             "controls": [self._snapshot_control(control) for control in source.controls],
-            "last_sync_time": self._health(source).last_sync_time,
+            "last_sync_time": health.last_sync_time if health else None,
             "heartbeat": self.snapshot_heartbeat(source),
         }
 
@@ -240,8 +241,16 @@ class SystemState:
         }
 
     def snapshot_heartbeat(self, source: Source) -> dict[str, Any]:
-        misses = self._health(source).consecutive_misses
-        state = "disconnected" if not source.connected else "missed" if misses else "ok"
+        health = self._health(source)
+        misses = health.consecutive_misses if health else 0
+        if not source.connected:
+            state = "disconnected"
+        elif health is None:
+            # ponytail: no liveness signal for non-QLCP sources; add a per-source
+            # report interval to the core when the first polling provider lands.
+            state = "unknown"
+        else:
+            state = "missed" if misses else "ok"
         return {"state": state, "consecutive_misses": misses}
 
     def _on_core_change(self, change: CoreChange) -> None:

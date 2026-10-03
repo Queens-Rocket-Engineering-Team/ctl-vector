@@ -779,9 +779,11 @@ def test_core_sensor_provider_appears_in_snapshot_and_recording_schema() -> None
     source = state.core.register_source("wireless", "pad", name="Pad antenna", sensors=(sensor,))
 
     assert state.recording_schema().sensors == (sensor,)
-    assert state.snapshot()["devices"][0]["sensors"] == [
-        {"id": 0, "name": "PAD_RSSI", "group": "radio", "unit": "dBm"},
-    ]
+    device = state.snapshot()["devices"][0]
+    assert device["sensors"] == [{"id": 0, "name": "PAD_RSSI", "group": "radio", "unit": "dBm"}]
+    # No transport liveness signal: never present the source as healthy.
+    assert device["last_sync_time"] is None
+    assert device["heartbeat"] == {"state": "unknown", "consecutive_misses": 0}
     assert [event["type"] for event in events] == ["device.registered"]
 
     source.close()
@@ -789,6 +791,17 @@ def test_core_sensor_provider_appears_in_snapshot_and_recording_schema() -> None
     assert state.recording_schema().sensors == (sensor,)
     assert state.snapshot()["devices"][0]["connected"] is False
     assert [event["type"] for event in events] == ["device.registered", "device.disconnected"]
+
+
+def test_non_qlcp_source_sharing_a_node_key_does_not_borrow_its_health() -> None:
+    from vector.core import SensorDefinition
+
+    state, _, qlcp, _ = _make_state()
+    qlcp.register_device(_make_device(name="PAD", connection_key="conn-a"))
+    state.core.register_source("wireless", "PAD", connection_key="conn-a", sensors=(SensorDefinition("RSSI"),))
+
+    states = {(device["source_provider"], device["heartbeat"]["state"]) for device in state.snapshot()["devices"]}
+    assert states == {("qlcp", "ok"), ("wireless", "unknown")}
 
 
 def test_kasa_control_has_only_its_existing_recording_column() -> None:

@@ -167,10 +167,10 @@ class QLCPStateAdapter:
         source = device.core_source
         return source.controls[control_id] if source is not None and 0 <= control_id < len(source.controls) else None
 
-    def _health(self, source: Source) -> TransportHealth:
+    def _health(self, source: Source) -> TransportHealth | None:
         device = self._sessions.get(source.key)
-        if device is None or device.connection_key != source.connection_key:
-            return TransportHealth(None, 0)
+        if source.provider != "qlcp" or device is None or device.connection_key != source.connection_key:
+            return None
         return TransportHealth(device.last_sync_time, device.missed_heartbeat_count)
 
     def record_command_sent(self, command: CommandRecord) -> StateEvent | None:
