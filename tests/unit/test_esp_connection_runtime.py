@@ -838,13 +838,13 @@ def test_runtime_monitor_routes_packets_to_packet_handler() -> None:
 
 
 
-def test_core_dispatches_duplicate_control_names_to_distinct_wire_ids() -> None:
+def test_core_dispatches_each_control_to_its_wire_id() -> None:
     async def run() -> None:
         runtime, tracker, state, _stream = _make_runtime()
         config = _make_config()
         config["controls"] = {
-            "valve": {"SHARED": {"type": "BOOL", "default_state": "CLOSED"}},
-            "relay": {"SHARED": {"type": "BOOL", "default_state": "CLOSED"}},
+            "valve": {"AV101": {"type": "BOOL", "default_state": "CLOSED"}},
+            "relay": {"RL101": {"type": "BOOL", "default_state": "CLOSED"}},
         }
         device = _make_session(runtime, config_dict=config)
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
@@ -880,13 +880,13 @@ def test_core_dispatches_duplicate_control_names_to_distinct_wire_ids() -> None:
     asyncio.run(run())
 
 
-def test_core_dispatch_preserves_types_of_same_named_control_bindings() -> None:
+def test_core_dispatch_preserves_each_bindings_wire_type() -> None:
     async def run() -> None:
         runtime, _tracker, state, _stream = _make_runtime()
         config = _make_config()
         config["controls"] = {
-            "valve": {"SHARED": {"type": "BOOL", "default_state": "CLOSED"}},
-            "heater": {"SHARED": {"type": "INT32", "default_state": "0"}},
+            "valve": {"AV101": {"type": "BOOL", "default_state": "CLOSED"}},
+            "heater": {"HTR101": {"type": "INT32", "default_state": "0"}},
         }
         device = _make_session(runtime, config_dict=config)
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
@@ -905,8 +905,8 @@ def test_core_dispatch_preserves_types_of_same_named_control_bindings() -> None:
             (1, ControlType.INT32, -25),
         ]
 
-        # The existing name-only endpoint keeps selecting the last declared match.
-        assert await runtime.set_control(device, "SHARED", "15")
+        # The existing name-only entry point resolves case-insensitively within the node.
+        assert await runtime.set_control(device, "htr101", "15")
         last_packet = cast("ControlPacket", _sent_packets(device)[-1])
         assert last_packet.control_id == 1
         assert last_packet.control_state == 15

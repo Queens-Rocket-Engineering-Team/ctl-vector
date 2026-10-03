@@ -48,9 +48,9 @@ Registration also creates a core source under `("qlcp", device_name)` and retain
 
 ## Names and identity
 
-Sensor and control names identify physical objects and are intended to be unique across the system. They normally come from the P&ID (piping and instrumentation diagram); internal items such as board relays use implementation-specific names. If the same name appears on more than one Control Node, it is expected to represent the same physical object.
+Sensor and control names identify physical objects and normally come from the P&ID (piping and instrumentation diagram); internal items such as board relays use implementation-specific names. Control names must be unique within a node, ignoring case: VECTOR rejects a CONFIG that repeats one and does not register the node. A control is identified by its node and name, so the same control name on two nodes is two distinct controls. VECTOR logs a warning in that case because recording control columns are keyed by name alone.
 
-This is a routing and data contract: CONTROL requests target matching names across nodes, [tares](TELEMETRY.md#taring) are shared by sensor name, and recording columns use these names. Reusing a name for unrelated equipment would conflate it in those paths.
+Sensor names are shared across nodes on purpose: [tares](TELEMETRY.md#taring) apply by sensor name and recording columns use these names, so the same sensor name on more than one node must represent the same physical measurement. The existing command endpoint still targets a control name across every node declaring it; see [Sending a command](#sending-a-command).
 
 ## Sending a command
 

@@ -70,30 +70,41 @@ def test_named_bindings_keep_each_sources_metadata_and_declaration_order() -> No
     assert core.source("test", "ground") is ground
 
 
-def test_duplicate_declarations_keep_independent_ordinal_readings_and_reports() -> None:
+def test_duplicate_sensor_declarations_keep_independent_ordinal_readings() -> None:
     core = Core()
     source = core.register_source(
         "test", "source",
         sensors=[SensorDefinition("PT101", "pressure", "psi"), SensorDefinition("PT101", "backup", "kPa")],
-        controls=[ControlDefinition("AV101", "valve"), ControlDefinition("AV101", "relay")],
     )
     first = source.publish_samples([(source.sensors[0], 1.0), (source.sensors[1], 2.0)], 1.0)
-    source.report_control(source.controls[0], False)
-    source.report_control(source.controls[1], True)
-    source.accept_control(source.controls[0], True)
 
     assert first is not None
     assert [reading.sensor_id for reading in first.readings] == [0, 1]
     assert [reading.unit_name for reading in first.readings] == ["psi", "kPa"]
-    assert source.controls[0].reported.value is False
-    assert source.controls[1].reported.value is True
-    assert source.controls[0].accepted.value is True
-    assert source.controls[1].accepted is None
     assert core.capture_tare_offset("PT101") == (1.5, "source", 2)
     assert source.sensor("PT101") is source.sensors[1]
-    assert source.control("AV101") is source.controls[1]
     batch = source.publish_samples([("PT101", 3.0)], 2.0)
     assert batch.readings[0].sensor_id == 1
+
+
+def test_duplicate_control_names_within_a_source_are_rejected() -> None:
+    core = Core()
+    with pytest.raises(ValueError, match="AV101"):
+        core.register_source("test", "source", controls=[ControlDefinition("AV101", "valve"), ControlDefinition("av101", "relay")])
+    assert core.sources() == ()
+
+
+def test_shared_control_names_across_sources_are_allowed_with_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr("vector.core.core.logger.warning", lambda _message, *args: warnings.append(args))
+    core = Core()
+    ground = core.register_source("test", "ground", controls=[ControlDefinition("AV101")])
+    flight = core.register_source("test", "flight", controls=[ControlDefinition("av101")])
+
+    assert core.sources() == (ground, flight)
+    assert ground.control("AV101") is ground.controls[0]
+    assert flight.control("AV101") is flight.controls[0]
+    assert [args[-1] for args in warnings] == ["test:ground"]
 
 
 def test_tare_uses_raw_history_and_only_changes_subsequent_samples() -> None:
@@ -283,7 +294,7 @@ def test_initial_controls_are_visible_during_registration_notification() -> None
     assert snapshots == [observation]
 
 
-def test_dispatch_preserves_duplicate_name_binding_identity() -> None:
+def test_dispatch_passes_each_exact_binding_to_the_handler() -> None:
     core = Core()
     writes = []
 
@@ -293,7 +304,7 @@ def test_dispatch_preserves_duplicate_name_binding_identity() -> None:
 
     source = core.register_source(
         "test", "source", control_handler=handler,
-        controls=[ControlDefinition("AV101", "valve"), ControlDefinition("AV101", "relay")],
+        controls=[ControlDefinition("AV101", "valve"), ControlDefinition("RL101", "relay")],
     )
     targets = source.controls
 

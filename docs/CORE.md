@@ -12,7 +12,9 @@ A new sensor service only needs to register its definitions and publish measurem
 - A **source** is one independently connected producer, identified by a provider and stable key. Examples are `("qlcp", "PANDA")` and `("kasa", "192.168.0.20")`.
 - A **binding** joins a definition to a source. A command targets control bindings explicitly.
 
-One source can declare many sensors and controls. Several sources can declare the same resource name. Sensor lookup and tares use exact names; control lookup is case-insensitive. The core keeps each source's metadata and control observations separate and does not select a preferred sensor path.
+One source can declare many sensors and controls. Several sources can declare the same resource name. Within one source, control names are unique ignoring case, and a registration that repeats one is rejected. Sensor lookup and tares use exact names; control lookup is case-insensitive. The core keeps each source's metadata and control observations separate and does not select a preferred sensor path.
+
+A control is identified by its source and name. The same control name on two sources is two controls, and the core logs a warning at registration because recording control columns are keyed by name alone.
 
 Source names are display labels and may repeat. Telemetry and state projections carry `source_provider` and `source_key`; use that pair for stable identity and `connection_key` to distinguish connections. For example, `("wireless", "pad")` and `("qlcp", "pad")` remain separate even if both are named `Pad`. CSV rows retain the label in `source` and append the same two identity columns.
 
@@ -37,7 +39,7 @@ Control values are `bool`, `int`, or `float`; `ControlType` has `BOOL`, `UINT32`
 
 A control's `default` describes device policy; registration does not send it or treat it as observed state. Supply `initial_controls` only when the provider already has observations, as Kasa does after discovery readback.
 
-Bindings have an ordinal within their source's declaration list. The QLCP adapter preserves CONFIG order so these ordinals match existing wire IDs; protocol IDs remain outside the definitions. Providers normally publish by name. The QLCP adapter uses explicit bindings to preserve distinct declarations even when a node repeats a name in different groups. Control observations also accept a name or explicit binding.
+Bindings have an ordinal within their source's declaration list. The QLCP adapter preserves CONFIG order so these ordinals match existing wire IDs; protocol IDs remain outside the definitions. Providers normally publish by name. The QLCP adapter publishes by explicit sensor binding, so a node that repeats a sensor name in different groups keeps distinct readings. Control observations also accept a name or explicit binding.
 
 All calls run on the existing asyncio loop. Subscription callbacks must return promptly. Stream consumers queue messages, the display consumer downsamples, and the recorder performs buffered writes. Callbacks do not become independent tasks automatically.
 
@@ -90,7 +92,7 @@ ESTOP does not pass through the gate. The QLCP runtime sends it directly, so a g
 
 1. The API or CLI resolves its existing target scope and converts operator input into a typed value. QLCP REST requests still target matching node controls; Kasa requests still target a selected plug.
 2. `core.set_control()` validates the selected binding and value before invoking the provider. It calls the registered async `handler(binding, value)` with that exact binding and returns the handler's `DispatchResult`, including a QLCP command ID when available. An unavailable source or a failed handler returns a failure result. If the source closes while the handler awaits I/O, the handler's result still stands: a command that was sent is reported as sent.
-3. The QLCP handler maps the binding's declaration ordinal to its wire control ID, then builds and sends CONTROL through the existing command tracker. This preserves distinct targets even when a node declares the same name in different groups. An integer the wire type cannot carry is refused with a failed result before anything is tracked or sent, and the connection is untouched. The Kasa handler writes power and refreshes the device to read it back.
+3. The QLCP handler maps the binding's declaration ordinal to its wire control ID, then builds and sends CONTROL through the existing command tracker. An integer the wire type cannot carry is refused with a failed result before anything is tracked or sent, and the connection is untouched. The Kasa handler writes power and refreshes the device to read it back.
 4. Hardware feedback enters through `source.report_control()`. QLCP response correlation stays in its adapter and tracker; accepted requests and reported `confirmed`, `pending`, or `error` states remain distinct from successful transmission. A reported value never raises: one that does not fit the control's declared type is logged and recorded with `error` status, keeping the last known value, so the operator sees the fault and the provider's connection stays up.
 5. `SystemState` translates core changes into the existing GUI snapshots and events. It reads command history from the existing QLCP tracker rather than maintaining a second history.
 

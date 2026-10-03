@@ -124,7 +124,7 @@ class Source:
         return self._sensors.get(name)
 
     def control(self, name: str) -> ControlBinding | None:
-        """Look up a name ignoring case; use ``controls`` to retain duplicate bindings."""
+        """Look up a name ignoring case; control names are unique within a source."""
         return self._controls.get(name.upper())
 
     def _resolve_control(self, name: str | ControlBinding) -> ControlBinding | None:
@@ -241,8 +241,12 @@ class Core:
         all publishing and feedback. The async handler receives the exact control
         binding and typed value; defaults describe controls but never actuate them.
         """
-        control_names = {control.name.upper() for control in controls}
-        if any(name.upper() not in control_names for name in initial_controls or {}):
+        names = [control.name.upper() for control in controls]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            message = f"Control names must be unique within a source, ignoring case: {', '.join(duplicates)}."
+            raise ValueError(message)
+        if any(name.upper() not in names for name in initial_controls or {}):
             raise ValueError("Initial control observations must refer to declared controls.")
         self._next_generation += 1
         source = Source(
@@ -262,6 +266,16 @@ class Core:
         if previous is not None:
             previous._retire()
         self._sources[provider, key] = source
+        for control in source.controls:
+            # Legal, since a command names its source; warn because recording
+            # control columns are keyed by name alone and will conflate them.
+            others = [
+                f"{other.provider}:{other.key}"
+                for other in self._sources.values()
+                if other is not source and other.connected and other.control(control.name) is not None
+            ]
+            if others:
+                logger.warning("Control %r on %s:%s is also declared by %s.", control.name, provider, key, ", ".join(others))
         self._changed(CoreChange(ChangeKind.SOURCE_REGISTERED, source=source))
         return source
 

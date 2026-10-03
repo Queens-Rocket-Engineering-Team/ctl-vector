@@ -36,3 +36,9 @@ class DeviceConfig:
             if sorted(ids) != [(i, i) for i in range(len(ids))]:
                 message = f"CONFIG {kind} IDs must be contiguous from 0, got {sorted(ids)}."
                 raise ValueError(message)
+        # A control is addressed by device and name, so a repeated name has no target.
+        names = [control.name.upper() for control in self.controls_by_id.values()]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            message = f"CONFIG control names must be unique within a device, ignoring case: {', '.join(duplicates)}."
+            raise ValueError(message)

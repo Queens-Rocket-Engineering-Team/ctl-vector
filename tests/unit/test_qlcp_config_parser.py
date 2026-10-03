@@ -325,3 +325,15 @@ def test_device_config_rejects_ids_that_are_not_declaration_ordinals(ids: tuple[
         DeviceConfig(name="PANDA", sensors_by_id=sensors, controls_by_id={})
     with pytest.raises(ValueError, match="contiguous"):
         DeviceConfig(name="PANDA", sensors_by_id={0: SensorConfig(id=1, name="S", group="pressure", unit="psi")}, controls_by_id={})
+
+
+def test_parse_config_rejects_repeated_control_names_ignoring_case() -> None:
+    config = {
+        "device_name": "PANDA",
+        "controls": {
+            "valve": {"AV101": {"type": "BOOL", "default_state": "CLOSED"}},
+            "relay": {"av101": {"type": "BOOL", "default_state": "CLOSED"}},
+        },
+    }
+    with pytest.raises(ValueError, match="AV101"):
+        parse_config(config)
