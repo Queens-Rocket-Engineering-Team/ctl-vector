@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from kasa import KasaException
 
+from vector.api.routers.controls import ControlRequest, set_control
 from vector.api.routers.kasa import control_kasa_device, get_kasa_devices
 from vector.core import Core
 from vector.runtime.kasa_runtime import KasaRuntime
@@ -196,5 +197,22 @@ def test_existing_rest_models_and_refresh_shape_are_unchanged(monkeypatch: pytes
         refreshed = await get_kasa_devices(services)
         assert [entry.model_dump() for entry in refreshed] == [{"alias": "Pump", "host": device.host, "model": "HS110", "active": False}]
         assert state.kasa_active() == {device.host: False}
+
+    asyncio.run(run())
+
+
+def test_generic_control_endpoint_drives_kasa_power(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run() -> None:
+        core = Core()
+        runtime = KasaRuntime(core=core)
+        device = _Device()
+        await _discover(runtime, monkeypatch, device)
+        request = ControlRequest(source=f"kasa:{device.host}", control="power", value=True)
+
+        result = await set_control(request, SimpleNamespace(core=core))
+
+        assert result.model_dump() == {"source": f"kasa:{device.host}", "control": "power", "submitted": True, "command_id": None}
+        assert device.writes == [True]
+        assert core.source("kasa", device.host).controls[0].reported.value is True
 
     asyncio.run(run())
