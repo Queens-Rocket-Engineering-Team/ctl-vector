@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from vector.api.fast_api import app
-from vector.core import ControlBinding, ControlDefinition, ControlHandler, ControlType, ControlValue, Core, DispatchResult
+from vector.core import ControlBinding, ControlDefinition, ControlHandler, ControlType, ControlValidationError, ControlValue, Core
 from vector.runtime.services import RuntimeServices
 
 
@@ -23,16 +23,16 @@ def _install(handler: ControlHandler) -> Core:
     return core
 
 
-async def _accept(_target: ControlBinding, _value: ControlValue) -> DispatchResult:
-    return DispatchResult(True, command_id=7)
+async def _accept(_target: ControlBinding, _value: ControlValue) -> int:
+    return 7
 
 
 def test_sets_a_control_by_source_and_name() -> None:
     writes = []
 
-    async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def handler(target: ControlBinding, value: ControlValue) -> int:
         writes.append((target.name, value))
-        return DispatchResult(True, command_id=7)
+        return 7
 
     _install(handler)
     with TestClient(app) as client:
@@ -56,12 +56,11 @@ def test_unknown_or_malformed_targets_are_rejected() -> None:
 def test_values_the_control_cannot_take_are_400_and_only_range_reaches_the_provider() -> None:
     writes = []
 
-    async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def handler(target: ControlBinding, value: ControlValue) -> None:
         writes.append((target.name, value))
         if isinstance(value, int) and value < 0:
             message = f"{value} does not fit UINT32."
-            raise ValueError(message)
-        return DispatchResult(True)
+            raise ControlValidationError(message)
 
     _install(handler)
     with TestClient(app) as client:
@@ -75,8 +74,8 @@ def test_values_the_control_cannot_take_are_400_and_only_range_reaches_the_provi
 
 
 def test_disconnected_source_is_409_and_a_failed_send_is_502() -> None:
-    async def failing(_target: ControlBinding, _value: ControlValue) -> DispatchResult:
-        return DispatchResult(False, error="Device is disconnected")
+    async def failing(_target: ControlBinding, _value: ControlValue) -> None:
+        raise OSError("Device is disconnected")
 
     core = _install(failing)
     with TestClient(app) as client:

@@ -11,7 +11,7 @@ from kasa import KasaException
 
 from vector.api.routers.controls import ControlRequest, set_control
 from vector.api.routers.kasa import control_kasa_device, get_kasa_devices
-from vector.core import Core
+from vector.core import ControlDispatchError, Core
 from vector.runtime.kasa_runtime import KasaRuntime
 from vector.runtime.session_telemetry import build_columns
 from vector.state.system_state import SystemState
@@ -127,8 +127,9 @@ def test_failed_readback_disconnects_only_that_source(monkeypatch: pytest.Monkey
         await _discover(runtime, monkeypatch, broken, healthy)
         broken.readback_error = KasaException("refresh failed")
 
-        with pytest.raises(KasaException, match="refresh failed"):
+        with pytest.raises(ControlDispatchError, match="refresh failed") as raised:
             await runtime.set_state(broken.host, True)
+        assert isinstance(raised.value.__cause__, KasaException)
 
         broken_source = core.source("kasa", broken.host)
         healthy_source = core.source("kasa", healthy.host)
@@ -166,8 +167,9 @@ def test_delayed_old_readback_cannot_change_rediscovered_source(monkeypatch: pyt
             old.readback_error = KasaException("old refresh failed")
         old.refresh_release.set()
         if fail_old_readback:
-            with pytest.raises(KasaException):
+            with pytest.raises(ControlDispatchError) as raised:
                 await pending
+            assert isinstance(raised.value.__cause__, KasaException)
         else:
             # The write was sent, so the command reports success; only its late
             # readback is kept away from the replacement source.

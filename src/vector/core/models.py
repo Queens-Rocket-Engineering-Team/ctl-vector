@@ -115,17 +115,6 @@ class ControlBinding:
 
 
 @dataclass(frozen=True, slots=True)
-class DispatchResult:
-    """Submission outcome, separate from subsequent accepted/reported control state."""
-
-    submitted: bool
-    command_id: int | None = None
-    error: str | None = None
-    cause: Exception | None = None
-    target: ControlBinding | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class SourceChanged:
     """A source was registered, or a registration was closed."""
 

@@ -9,7 +9,9 @@ import aioconsole
 from vector.core import (
     TARE_DEFAULT_SAMPLES,
     TARE_SAMPLE_CAPACITY,
+    ControlDispatchError,
     ControlType,
+    ControlValidationError,
     TareCaptureError,
 )
 
@@ -64,11 +66,12 @@ async def _handle_control_command(runtime: RuntimeServices, source_name: str, co
         logger.info(f"Invalid value for {target.type.name} control '{target.name}': {exc}")
         return
     address = f"{source.provider}:{source.key}"
-    result = await runtime.core.set_control(target, value)
-    if result.submitted:
-        logger.info(f"Sent {value!r} to {target.name} on {address}")
-    else:
-        logger.info(f"Control {target.name} on {address} was not submitted: {result.error}")
+    try:
+        await runtime.core.set_control(target, value)
+    except (ControlValidationError, ControlDispatchError) as exc:
+        logger.info(f"Control {target.name} on {address} was not submitted: {exc}")
+        return
+    logger.info(f"Sent {value!r} to {target.name} on {address}")
 
 
 SERVER_COMMANDS = [

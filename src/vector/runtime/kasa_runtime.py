@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 from kasa import Device, Discover, KasaException
 
-from vector.core import ControlBinding, ControlDefinition, ControlObservation, ControlStatus, ControlType, ControlValue, Core, DispatchResult, Source
+from vector.core import ControlBinding, ControlDefinition, ControlObservation, ControlStatus, ControlType, ControlValue, Core, Source
 
 
 logger = logging.getLogger(__name__)
@@ -54,14 +54,10 @@ class KasaRuntime:
         if target is None:
             message = f"Kasa source at {host} declares no power control."
             raise RuntimeError(message)
-        result = await self.core.set_control(target, active)
-        if not result.submitted:
-            if result.cause is not None:
-                raise result.cause
-            raise RuntimeError(result.error or "Kasa control failed")
+        await self.core.set_control(target, active)
         return dev
 
-    async def _write_power(self, dev: Device, target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def _write_power(self, dev: Device, target: ControlBinding, value: ControlValue) -> None:
         """Write power, then report the observed value after a successful refresh."""
         source = target.source
         active = bool(value)
@@ -73,7 +69,6 @@ class KasaRuntime:
             await dev.update()
             source.report_control("power", dev.is_on)
             logger.info("Set Kasa device at %s: active=%s", dev.host, active)
-            return DispatchResult(submitted=True)
         except KasaException:
             logger.exception("Kasa error controlling device at %s", dev.host)
             # A delayed failure from an old discovery must not remove its replacement.

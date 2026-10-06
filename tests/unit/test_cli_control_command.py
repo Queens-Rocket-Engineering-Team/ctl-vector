@@ -5,7 +5,7 @@ import asyncio
 from typing import cast
 from unittest.mock import MagicMock
 
-from vector.core import ControlBinding, ControlDefinition, ControlType, ControlValue, Core, DispatchResult
+from vector.core import ControlBinding, ControlDefinition, ControlType, ControlValue, Core
 from vector.daemons.cli_terminal import handle_device_command
 from vector.runtime.services import RuntimeServices
 
@@ -13,9 +13,9 @@ from vector.runtime.services import RuntimeServices
 def _make_runtime() -> tuple[RuntimeServices, list[tuple[str, str, ControlValue]]]:
     writes: list[tuple[str, str, ControlValue]] = []
 
-    async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def handler(target: ControlBinding, value: ControlValue) -> int:
         writes.append((target.source.key, target.name, value))
-        return DispatchResult(True, command_id=1)
+        return 1
 
     core = Core()
     core.register_source(

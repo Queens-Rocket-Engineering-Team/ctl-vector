@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 import orjson
 
-from vector.core import DispatchResult
+from vector.core import ControlDispatchError, ControlValidationError
 from vector.drivers.esp import ESPDriver, ESPDriverConnectionClosedError
 from vector.qlcp.config_parser import QLCPConfigError, cast_control_state, parse_config
 from vector.qlcp.enums import ControlState, PacketType
@@ -470,10 +470,13 @@ class ESPConnectionRuntime:
         source = session.core_source
         if source is None:
             return False
-        result = await self.core.set_control(source.controls[control.id], to_core_value(state))
-        return result.submitted
+        try:
+            await self.core.set_control(source.controls[control.id], to_core_value(state))
+        except (ControlValidationError, ControlDispatchError):
+            return False
+        return True
 
-    async def _write_control(self, session: ESPDeviceSession, target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def _write_control(self, session: ESPDeviceSession, target: ControlBinding, value: ControlValue) -> int:
         """Core callback: translate a typed value to QLCP and preserve its command ID."""
         control = session.qlcp_config.controls_by_id[target.id]
         try:
@@ -481,17 +484,17 @@ class ESPConnectionRuntime:
         except ValueError as exc:
             # The value is wrong, not the connection: refuse without touching the session.
             logger.warning("Refused CONTROL for %s on %s: %s", target.name, session.name, exc)
-            return DispatchResult(submitted=False, error=str(exc), cause=exc)
+            raise ControlValidationError(str(exc)) from exc
         if not session.is_connected:
             self.remove_device(session)
-            return DispatchResult(submitted=False, error="Device is disconnected")
+            raise ControlDispatchError("Device is disconnected")
         try:
             command = await self.send_tracked_command(session, packet)
-        except Exception as exc:
+        except Exception:
             logger.exception("Error sending CONTROL to %s", session.name)
             self.remove_device(session)
-            return DispatchResult(submitted=False, error=str(exc), cause=exc)
-        return DispatchResult(submitted=True, command_id=command.command_id)
+            raise
+        return command.command_id
 
     async def get_status(self, session: ESPDeviceSession) -> bool:
         """Request the device to report its current control states. Returns True if sent."""

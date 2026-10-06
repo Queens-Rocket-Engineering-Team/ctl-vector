@@ -5,8 +5,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import orjson
+import pytest
 
-from vector.core import Core
+from vector.core import ControlValidationError, Core
 from vector.qlcp.config_parser import parse_config
 from vector.qlcp.decoding import decode_packet_client
 from vector.qlcp.enums import ControlConfirmStatus, ControlState, ControlType, ErrorCode, PacketType
@@ -850,11 +851,8 @@ def test_core_dispatches_each_control_to_its_wire_id() -> None:
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
         targets = device.core_source.controls
 
-        outcomes = [await state.core.set_control(target, True) for target in targets]
+        command_ids = [await state.core.set_control(target, True) for target in targets]
 
-        assert len(outcomes) == 2
-        assert all(outcome.submitted for outcome in outcomes)
-        assert [outcome.target for outcome in outcomes] == list(targets)
         packets = _sent_packets(device)
         assert len(packets) == 2
         assert all(isinstance(packet, ControlPacket) for packet in packets)
@@ -864,8 +862,8 @@ def test_core_dispatches_each_control_to_its_wire_id() -> None:
         assert [packet.control_id for packet in controls] == [0, 1]
         assert [packet.control_state for packet in controls] == [ControlState.OPEN, ControlState.OPEN]
         assert [command.control_id for command in tracker.pending] == [0, 1]
-        assert [outcome.command_id for outcome in outcomes] == [command.command_id for command in tracker.pending]
-        assert len({outcome.command_id for outcome in outcomes}) == 2
+        assert command_ids == [command.command_id for command in tracker.pending]
+        assert len(set(command_ids)) == 2
 
         runtime.handle_ack(device, AckPacket.create(cast("ControlPacket", packets[0])))
         assert targets[0].accepted is not None
@@ -892,11 +890,9 @@ def test_core_dispatch_preserves_each_bindings_wire_type() -> None:
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
         boolean, integer = device.core_source.controls
 
-        bool_result = await state.core.set_control(boolean, True)
-        int_result = await state.core.set_control(integer, -25)
+        await state.core.set_control(boolean, True)
+        await state.core.set_control(integer, -25)
 
-        assert bool_result.submitted
-        assert int_result.submitted
         decoded = [decode_packet_client(cast("ControlPacket", packet).encode()) for packet in _sent_packets(device)]
         assert all(isinstance(packet, ControlPacket) for packet in decoded)
         controls = [cast("ControlPacket", packet) for packet in decoded]
@@ -923,9 +919,8 @@ def test_out_of_range_setpoint_is_refused_without_dropping_the_node() -> None:
         heater = device.core_source.control("HEATER1")  # declared UINT32
 
         for value in (-1, 2**32):
-            result = await state.core.set_control(heater, value)
-            assert not result.submitted
-            assert "UINT32" in (result.error or "")
+            with pytest.raises(ControlValidationError, match="UINT32"):
+                await state.core.set_control(heater, value)
 
         assert _sent_packets(device) == []
         assert tracker.pending == ()

@@ -12,13 +12,13 @@ from vector.core import (
     ControlBinding,
     ControlChanged,
     ControlDefinition,
+    ControlDispatchError,
     ControlObservation,
     ControlStatus,
     ControlType,
     ControlValidationError,
     ControlValue,
     Core,
-    DispatchResult,
     SensorDefinition,
     SourceChanged,
     TareCaptureError,
@@ -38,15 +38,15 @@ def guarded_import(name, *args, **kwargs):
     return original_import(name, *args, **kwargs)
 builtins.__import__ = guarded_import
 
-from vector.core import Core, DispatchResult, SensorDefinition, ControlDefinition
+from vector.core import Core, SensorDefinition, ControlDefinition
 async def write(target, value):
-    return DispatchResult(True)
+    return 7
 core = Core()
 source = core.register_source('test', 'source', sensors=[SensorDefinition('pressure')],
                               controls=[ControlDefinition('valve')], control_handler=write)
 source.publish_samples([('pressure', 12.0)], 1.0)
 assert core.capture_tare_offset('pressure') == (12.0, 'source', 1)
-assert asyncio.run(core.set_control(source.controls[0], True)).submitted
+assert asyncio.run(core.set_control(source.controls[0], True)) == 7
 """
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)  # noqa: S603
 
@@ -303,9 +303,9 @@ def test_dispatch_passes_each_exact_binding_to_the_handler() -> None:
     core = Core()
     writes = []
 
-    async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def handler(target: ControlBinding, value: ControlValue) -> int:
         writes.append((target, value))
-        return DispatchResult(True, command_id=target.id + 100)
+        return target.id + 100
 
     source = core.register_source(
         "test", "source", control_handler=handler,
@@ -313,25 +313,21 @@ def test_dispatch_passes_each_exact_binding_to_the_handler() -> None:
     )
     targets = source.controls
 
-    results = [asyncio.run(core.set_control(target, True)) for target in targets]
+    command_ids = [asyncio.run(core.set_control(target, True)) for target in targets]
 
     assert len(writes) == 2
     assert writes[0][0] is source.controls[0]
     assert writes[1][0] is source.controls[1]
     assert [(target.id, target.group, value) for target, value in writes] == [(0, "valve", True), (1, "relay", True)]
-    assert [result.command_id for result in results] == [100, 101]
-    assert all(result.submitted for result in results)
-    assert results[0].target is source.controls[0]
-    assert results[1].target is source.controls[1]
+    assert command_ids == [100, 101]
 
 
 def test_forged_and_foreign_bindings_fail_before_any_dispatch() -> None:
     core = Core()
     writes = []
 
-    async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def handler(target: ControlBinding, value: ControlValue) -> None:
         writes.append((target, value))
-        return DispatchResult(True)
 
     source = core.register_source("test", "source", controls=[ControlDefinition("AV101")], control_handler=handler)
     target = source.controls[0]
@@ -363,16 +359,16 @@ def test_integer_range_errors_remain_the_providers_responsibility() -> None:
     core = Core()
     values = []
 
-    async def handler(_target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def handler(_target: ControlBinding, value: ControlValue) -> None:
         values.append(value)
-        return DispatchResult(False)
+        raise ControlValidationError("-1 does not fit UINT32.")
 
     source = core.register_source(
         "test", "source", controls=[ControlDefinition("setpoint", type=ControlType.UINT32)], control_handler=handler,
     )
-    result = asyncio.run(core.set_control(source.controls[0], -1))
+    with pytest.raises(ControlValidationError, match="UINT32"):
+        asyncio.run(core.set_control(source.controls[0], -1))
     assert values == [-1]
-    assert not result.submitted
 
 
 def test_dispatch_reports_handler_failure_and_does_not_infer_acceptance() -> None:
@@ -380,20 +376,21 @@ def test_dispatch_reports_handler_failure_and_does_not_infer_acceptance() -> Non
     writes = []
     failure = OSError("connection failed")
 
-    async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def handler(target: ControlBinding, value: ControlValue) -> int:
         writes.append((target.name, value))
         if target.name == "failed":
             raise failure
-        return DispatchResult(True, command_id=42)
+        return 42
 
     source = core.register_source(
         "test", "source", control_handler=handler,
         controls=[ControlDefinition("failed"), ControlDefinition("good")],
     )
-    results = [asyncio.run(core.set_control(target, True)) for target in source.controls]
+    with pytest.raises(ControlDispatchError, match="connection failed") as raised:
+        asyncio.run(core.set_control(source.controls[0], True))
+    assert raised.value.__cause__ is failure
+    assert asyncio.run(core.set_control(source.controls[1], True)) == 42
     assert writes == [("failed", True), ("good", True)]
-    assert results[0] == DispatchResult(False, error="connection failed", cause=failure, target=source.controls[0])
-    assert results[1] == DispatchResult(True, command_id=42, target=source.controls[1])
     assert source.controls[1].accepted is None
     assert source.controls[1].reported is None
 
@@ -402,15 +399,13 @@ def test_disconnected_and_foreign_targets_cannot_dispatch() -> None:
     core = Core()
     writes = []
 
-    async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
+    async def handler(target: ControlBinding, value: ControlValue) -> None:
         writes.append((target, value))
-        return DispatchResult(True)
 
     source = core.register_source("test", "source", controls=[ControlDefinition("AV101")], control_handler=handler)
     source.close()
-    result = asyncio.run(core.set_control(source.controls[0], True))
-    assert not result.submitted
-    assert result.error == "Control source is unavailable."
+    with pytest.raises(ControlDispatchError, match="unavailable"):
+        asyncio.run(core.set_control(source.controls[0], True))
     with pytest.raises(ControlValidationError, match="does not belong"):
         asyncio.run(Core().set_control(source.controls[0], True))
     assert writes == []
@@ -422,22 +417,20 @@ def test_a_delayed_command_completion_cannot_change_a_replacement() -> None:
         started = asyncio.Event()
         finish = asyncio.Event()
 
-        async def handler(target: ControlBinding, value: ControlValue) -> DispatchResult:
+        async def handler(target: ControlBinding, value: ControlValue) -> int:
             started.set()
             await finish.wait()
             old.accept_control(target, value)
             old.report_control(target, value)
-            return DispatchResult(True, command_id=42)
+            return 42
 
         old = core.register_source("test", "source", controls=[ControlDefinition("AV101")], control_handler=handler)
         task = asyncio.create_task(core.set_control(old.controls[0], True))
         await started.wait()
         new = core.register_source("test", "source", controls=[ControlDefinition("AV101")])
         finish.set()
-        result = await task
         # The handler did send; the result must say so even though its source was replaced.
-        assert result.submitted
-        assert result.command_id == 42
+        assert await task == 42
         assert new.controls[0].accepted is None
         assert new.controls[0].reported is None
 

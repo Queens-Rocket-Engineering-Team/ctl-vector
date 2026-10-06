@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from vector.api.deps import get_runtime
-from vector.core import ControlValidationError
+from vector.core import ControlDispatchError, ControlValidationError
 from vector.runtime.services import RuntimeServices
 
 
@@ -41,14 +41,12 @@ async def set_control(body: ControlRequest, rt: Annotated[RuntimeServices, Depen
         raise HTTPException(409, f"Source {body.source!r} is disconnected.")
 
     try:
-        result = await rt.core.set_control(target, body.value)
+        command_id = await rt.core.set_control(target, body.value)
     except ControlValidationError as exc:
         raise HTTPException(400, str(exc)) from None
-    if not result.submitted:
-        # A provider that refused the value answers 400; one that could not send answers 502.
-        status = 400 if isinstance(result.cause, ValueError) else 502
-        logger.warning("Control %s on %s was not submitted: %s", target.name, body.source, result.error)
-        raise HTTPException(status, result.error or "Control was not submitted.")
+    except ControlDispatchError as exc:
+        logger.warning("Control %s on %s was not submitted: %s", target.name, body.source, exc)
+        raise HTTPException(502, str(exc)) from None
 
-    logger.info("User set %s on %s to %r (command %s)", target.name, body.source, body.value, result.command_id)
-    return ControlResult(source=body.source, control=target.name, submitted=True, command_id=result.command_id)
+    logger.info("User set %s on %s to %r (command %s)", target.name, body.source, body.value, command_id)
+    return ControlResult(source=body.source, control=target.name, submitted=True, command_id=command_id)

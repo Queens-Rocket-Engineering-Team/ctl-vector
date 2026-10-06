@@ -13,7 +13,7 @@ import math
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import NamedTuple, TypeVar
 
@@ -26,7 +26,6 @@ from vector.core.models import (
     ControlType,
     ControlValue,
     CoreChange,
-    DispatchResult,
     SensorBinding,
     SensorDefinition,
     SourceChanged,
@@ -43,7 +42,9 @@ TARE_SAMPLE_CAPACITY = 256
 TARE_DEFAULT_SAMPLES = 16
 TARE_SAMPLE_MAX_AGE_S = 2.0
 
-ControlHandler = Callable[[ControlBinding, ControlValue], Awaitable[DispatchResult]]
+# Returns the provider's command ID, or None if it has none. Raise ControlValidationError
+# to refuse a value without sending; raise anything else when sending failed.
+ControlHandler = Callable[[ControlBinding, ControlValue], Awaitable[int | None]]
 _Notification = TypeVar("_Notification")
 _Binding = TypeVar("_Binding", SensorBinding, ControlBinding)
 
@@ -54,6 +55,13 @@ class TareCaptureError(Exception):
 
 class ControlValidationError(ValueError):
     """The requested value is invalid for at least one target; nothing was sent."""
+
+
+class ControlDispatchError(Exception):
+    """The command was not submitted: its source is unavailable or its provider failed.
+
+    When the provider raised, that exception is chained as ``__cause__``.
+    """
 
 
 class TareCapture(NamedTuple):
@@ -291,14 +299,16 @@ class Core:
     def sensors(self, name: str | None = None) -> tuple[SensorBinding, ...]:
         return tuple(sensor for source in self.sources() for sensor in source.sensors if name is None or sensor.name == name)
 
-    async def set_control(self, target: ControlBinding, value: ControlValue) -> DispatchResult:
-        """Validate one explicit target and value, then report the provider's submission.
+    async def set_control(self, target: ControlBinding, value: ControlValue) -> int | None:
+        """Validate one explicit target and value, submit it, and return its command ID.
 
-        An invalid target or value raises before anything is sent. An unavailable
-        source or a failed handler returns a failure result. The handler's result
-        stands even if its source closes while it awaits I/O: a command that was
-        sent is reported as sent. Providers report acceptance and physical
-        feedback separately.
+        Returns None when the provider has no command IDs. Raises
+        ControlValidationError when the target or value is invalid, including a
+        value the provider refuses; nothing was sent. Raises ControlDispatchError
+        when the source is unavailable or the provider failed to send. A command
+        that was sent is reported as sent even if its source closes while the
+        handler awaits I/O. Providers report acceptance and physical feedback
+        separately.
         """
         source = target.source
         if source._core is not self or source._resolve_control(target) is not target:
@@ -306,12 +316,13 @@ class Core:
         validated = _validated_value(target, value)
         handler = source._control_handler
         if not self._is_current(source) or handler is None:
-            return DispatchResult(False, error="Control source is unavailable.", target=target)
+            raise ControlDispatchError("Control source is unavailable.")
         try:
-            outcome = await handler(target, validated)
+            return await handler(target, validated)
+        except (ControlValidationError, ControlDispatchError):
+            raise
         except Exception as exc:
-            return DispatchResult(False, error=str(exc), cause=exc, target=target)
-        return replace(outcome, target=target)
+            raise ControlDispatchError(str(exc) or type(exc).__name__) from exc
 
     def subscribe_samples(self, callback: Callable[[TelemetryBatch], None]) -> None:
         """Receive future batches inline for the core's lifetime; queue slow work. No history is replayed."""
