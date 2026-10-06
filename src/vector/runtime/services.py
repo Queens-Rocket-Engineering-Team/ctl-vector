@@ -81,8 +81,8 @@ class RuntimeServices:
         logger.info("Starting camera discovery daemon...")
         self._tasks["camera_connector"] = loop.create_task(self.camera_runtime.connect_all_cameras())
 
-        # Kasa discovery, then liveness polling
-        logger.info("Starting Kasa daemon...")
+        # Kasa liveness polling; discovery registers plugs through the discovery service.
+        logger.info("Starting Kasa poll daemon...")
         self._tasks["kasa"] = loop.create_task(self.kasa_runtime.run())
 
         # Log stream daemon
@@ -126,7 +126,6 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
     state_stream = StateStream(system_state, metrics=metrics)
     system_state.set_publisher(state_stream.publish)
     log_stream = LogStream(metrics=metrics)
-    discovery_service = DiscoveryService()
     telemetry_stream = TelemetryStreamRuntime(metrics=metrics)
     telemetry_display_stream = TelemetryDisplayStream(metrics=metrics)
     esp_runtime = ESPConnectionRuntime(
@@ -156,6 +155,8 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
     )
     gui_watchdog = GUIWatchdog(state_stream=state_stream, esp_runtime=esp_runtime, metrics=metrics)
     kasa_runtime = KasaRuntime(core=core)
+    # One discovery request reaches every provider; the periodic loop covers plugs that reappear.
+    discovery_service = DiscoveryService(providers=[kasa_runtime.discover])
     session_runtime = SessionRuntime(
         paths=recording_paths,
         telemetry_publisher=telemetry_session,

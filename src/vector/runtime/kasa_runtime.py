@@ -33,20 +33,8 @@ class KasaRuntime:
         self.core = core
         self._registry: dict[str, _KasaEntry] = {}
 
-    def get_device(self, host: str) -> Device | None:
-        entry = self._registry.get(host)
-        return entry.device if entry is not None else None
-
-    async def get_devices(self) -> list[Device]:
-        entries = list(self._registry.values())
-        await asyncio.gather(*(entry.device.update() for entry in entries))
-        for entry in entries:
-            self._report(entry)
-        return [entry.device for entry in entries]
-
     async def run(self) -> None:
-        """Discover plugs, then poll each one so a plug that stops answering is closed."""
-        await self.discover()
+        """Poll each known plug so one that stops answering is closed; discovery registers them."""
         while True:
             await asyncio.sleep(POLL_INTERVAL_S)
             await self.poll_once()
@@ -79,18 +67,14 @@ class KasaRuntime:
             power.source.report_control(power, entry.device.is_on)
 
     async def discover(self) -> None:
+        """Register plugs not already known; the poll loop keeps known ones current."""
         try:
             logger.info("Sending kasa discovery request...")
             devices = await Discover.discover()
-            await asyncio.gather(*(self._register_discovered_device(dev) for dev in devices.values()))
+            new = [dev for host, dev in devices.items() if host not in self._registry]
+            await asyncio.gather(*(self._register_discovered_device(dev) for dev in new))
         except Exception:
             logger.exception("Failed to discover Kasa devices")
-
-    async def set_state(self, host: str, active: bool) -> Device:
-        """Compatibility entry point used by the existing Kasa HTTP endpoint."""
-        entry = self._require_device(host)
-        await self.core.set_control(entry.power, active)
-        return entry.device
 
     async def _write_power(self, dev: Device, target: ControlBinding, value: ControlValue) -> None:
         """Write power, then report the observed value after a successful refresh."""
@@ -129,12 +113,6 @@ class KasaRuntime:
             initial_controls={"power": ControlObservation(value=dev.is_on, timestamp=time.monotonic(), status=ControlStatus.CONFIRMED)},
         )
         self._registry[dev.host] = _KasaEntry(dev, source.controls[0])
-
-    def _require_device(self, host: str) -> _KasaEntry:
-        entry = self._registry.get(host)
-        if entry is None:
-            raise KeyError("No Kasa device found")
-        return entry
 
     def _remove_device(self, host: str) -> None:
         entry = self._registry.pop(host, None)

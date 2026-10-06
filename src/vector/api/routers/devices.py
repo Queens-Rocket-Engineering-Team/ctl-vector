@@ -90,13 +90,13 @@ async def update_autodiscovery_settings(
     )
 
 
-@router.post("/v1/discover", summary="Send a SSP discover request for new ESP Devices")
+@router.post("/v1/discover", summary="Discover new devices on every provider")
 async def discover_devices(rt: Annotated[RuntimeServices, Depends(get_runtime)]) -> CommandResponse:
     logger.info("User sent device discover command")
     rt.discovery_service.discover()
     return CommandResponse(
         status="sent",
-        message="Discovery broadcast sent. Devices will auto-connect.",
+        message="Discovery started. Nodes will auto-connect; plugs register as they answer.",
     )
 
 

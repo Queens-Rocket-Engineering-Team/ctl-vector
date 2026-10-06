@@ -25,6 +25,30 @@ class _StopLoop(Exception):
     pass
 
 
+def test_discover_starts_every_provider_without_waiting_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        runs = 0
+
+        async def provider() -> None:
+            nonlocal runs
+            runs += 1
+            started.set()
+            await release.wait()
+
+        service = DiscoveryService(providers=[provider])
+        monkeypatch.setattr(service, "_create_socket", FakeSocket)
+
+        service.discover()  # returns before the provider finishes
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert runs == 1
+        release.set()
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+
 def test_default_config_is_periodic_discovery() -> None:
     service = DiscoveryService()
 

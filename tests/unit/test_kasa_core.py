@@ -1,4 +1,4 @@
-"""Kasa uses ordinary core dispatch and only publishes successful readback."""
+"""Kasa plugs are ordinary core sources: dispatched, observed, discovered, and polled like any other."""
 
 from __future__ import annotations
 import asyncio
@@ -10,7 +10,6 @@ import pytest
 from kasa import KasaException
 
 from vector.api.routers.controls import ControlRequest, set_control
-from vector.api.routers.kasa import control_kasa_device, get_kasa_devices
 from vector.core import ControlDispatchError, Core
 from vector.runtime.kasa_runtime import POLL_MISS_LIMIT, KasaRuntime
 from vector.runtime.session_telemetry import build_columns
@@ -57,7 +56,7 @@ async def _discover(runtime: KasaRuntime, monkeypatch: pytest.MonkeyPatch, *devi
     await runtime.discover()
 
 
-def test_wrapper_dispatches_core_and_waits_for_observation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_power_is_reported_only_after_readback(monkeypatch: pytest.MonkeyPatch) -> None:
     async def run() -> None:
         core = Core()
         state = SystemState(core=core)
@@ -71,21 +70,18 @@ def test_wrapper_dispatches_core_and_waits_for_observation(monkeypatch: pytest.M
         power = source.control("power")
         assert power is not None
         assert power.default is None
-        dispatcher = AsyncMock(wraps=core.set_control)
-        monkeypatch.setattr(core, "set_control", dispatcher)
         device.refresh_started = asyncio.Event()
         device.refresh_release = asyncio.Event()
 
-        command = asyncio.create_task(runtime.set_state(device.host, True))
+        command = asyncio.create_task(core.set_control(power, True))
         await asyncio.wait_for(device.refresh_started.wait(), timeout=1.0)
         assert device.writes == [True]
         assert power.reported is not None
         assert power.reported.value is False
         assert state.kasa_active() == {device.host: False}
         device.refresh_release.set()
-        assert await command is device
+        assert await command is None  # Kasa has no command IDs
 
-        dispatcher.assert_awaited_once_with(power, True)
         assert power.reported is not None
         assert power.reported.value is True
         assert [event["type"] for event in events] == ["kasa.registered", "kasa.updated"]
@@ -103,12 +99,11 @@ def test_reports_readback_even_when_it_differs_from_requested_value(monkeypatch:
         device = _Device()
         await _discover(runtime, monkeypatch, device)
         device.observed_override = False
-
-        returned = await runtime.set_state(device.host, True)
-
-        assert returned is device
-        assert device.writes == [True]
         power, = core.source("kasa", device.host).controls
+
+        await core.set_control(power, True)
+
+        assert device.writes == [True]
         assert power.reported is not None
         assert power.reported.value is False
 
@@ -124,19 +119,17 @@ def test_failed_readback_disconnects_only_that_source(monkeypatch: pytest.Monkey
         healthy = _Device("192.168.1.6", active=True)
         await _discover(runtime, monkeypatch, broken, healthy)
         broken.readback_error = KasaException("refresh failed")
-
-        with pytest.raises(ControlDispatchError, match="refresh failed") as raised:
-            await runtime.set_state(broken.host, True)
-        assert isinstance(raised.value.__cause__, KasaException)
-
         broken_source = core.source("kasa", broken.host)
         healthy_source = core.source("kasa", healthy.host)
         assert broken_source is not None
-        assert not broken_source.connected
         assert healthy_source is not None
+
+        with pytest.raises(ControlDispatchError, match="refresh failed") as raised:
+            await core.set_control(broken_source.controls[0], True)
+        assert isinstance(raised.value.__cause__, KasaException)
+
+        assert not broken_source.connected
         assert healthy_source.connected
-        assert runtime.get_device(broken.host) is None
-        assert runtime.get_device(healthy.host) is healthy
         assert state.kasa_active() == {broken.host: False, healthy.host: True}
 
     asyncio.run(run())
@@ -164,7 +157,6 @@ def test_polling_reports_hand_toggles_and_closes_an_unresponsive_plug(monkeypatc
 
         await runtime.poll_once()
         assert not quiet_source.connected
-        assert runtime.get_device(quiet.host) is None
         assert [event["type"] for event in events[-2:]] == ["kasa.updated", "kasa.disconnected"]
 
     asyncio.run(run())
@@ -179,11 +171,14 @@ def test_delayed_old_readback_cannot_change_rediscovered_source(monkeypatch: pyt
         old = _Device()
         await _discover(runtime, monkeypatch, old)
         old_source = core.source("kasa", old.host)
+        assert old_source is not None
         old.refresh_started = asyncio.Event()
         old.refresh_release = asyncio.Event()
-        pending = asyncio.create_task(runtime.set_state(old.host, True))
+        pending = asyncio.create_task(core.set_control(old_source.controls[0], True))
         await asyncio.wait_for(old.refresh_started.wait(), timeout=1.0)
 
+        # The poll loop gave up on the plug while its write was still in flight, then it reappeared.
+        runtime._remove_device(old.host)  # noqa: SLF001
         replacement = _Device(old.host, active=False, alias="Replacement")
         await _discover(runtime, monkeypatch, replacement)
         new_source = core.source("kasa", replacement.host)
@@ -199,9 +194,8 @@ def test_delayed_old_readback_cannot_change_rediscovered_source(monkeypatch: pyt
         else:
             # The write was sent, so the command reports success; only its late
             # readback is kept away from the replacement source.
-            assert await pending is old
+            assert await pending is None
 
-        assert runtime.get_device(replacement.host) is replacement
         assert core.source("kasa", replacement.host) is new_source
         assert new_source.connected
         assert state.kasa_active() == {replacement.host: False}
@@ -210,21 +204,23 @@ def test_delayed_old_readback_cannot_change_rediscovered_source(monkeypatch: pyt
     asyncio.run(run())
 
 
-def test_existing_rest_models_and_refresh_shape_are_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rediscovery_keeps_known_plugs_and_registers_new_ones(monkeypatch: pytest.MonkeyPatch) -> None:
     async def run() -> None:
         core = Core()
         state = SystemState(core=core)
+        events: list[StateEvent] = []
+        state.set_publisher(events.append)
         runtime = KasaRuntime(core=core)
-        device = _Device()
-        await _discover(runtime, monkeypatch, device)
-        services = SimpleNamespace(kasa_runtime=runtime)
+        first = _Device("192.168.1.5")
+        await _discover(runtime, monkeypatch, first)
+        first_source = core.source("kasa", first.host)
 
-        result = await control_kasa_device(services, device.host, True)
-        assert result.model_dump() == {"alias": "Pump", "host": device.host, "model": "HS110", "active": True}
-        device.hardware_state = False
-        refreshed = await get_kasa_devices(services)
-        assert [entry.model_dump() for entry in refreshed] == [{"alias": "Pump", "host": device.host, "model": "HS110", "active": False}]
-        assert state.kasa_active() == {device.host: False}
+        second = _Device("192.168.1.6", alias="Heater")
+        await _discover(runtime, monkeypatch, _Device(first.host, alias="Same plug, new object"), second)
+
+        assert core.source("kasa", first.host) is first_source
+        assert core.source("kasa", second.host) is not None
+        assert [event["type"] for event in events] == ["kasa.registered", "kasa.registered"]
 
     asyncio.run(run())
 

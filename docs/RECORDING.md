@@ -100,7 +100,7 @@ Control columns use the declared group and name. The writer encodes a boolean in
 
 Mumble is not currently used for operations communications. Its recording integration remains available, so a session may have no audio even when telemetry and video are present.
 
-[KasaRuntime](../src/vector/runtime/kasa_runtime.py) is a legacy smart-outlet integration for tank heaters. The run-tank heater now uses a Control Node with a local PID loop. Kasa discovery, API routes, state, and CSV columns remain available, but this path is outside QLCP command tracking and ESTOP.
+[KasaRuntime](../src/vector/runtime/kasa_runtime.py) is a legacy smart-outlet integration for tank heaters. The run-tank heater now uses a Control Node with a local PID loop. Plugs are discovered with nodes, polled for liveness, commanded through `/v1/control`, and recorded in their own CSV columns, but this path is outside QLCP command tracking and ESTOP.
 
 ## Changing this subsystem
 

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-from vector.api.routers import cameras, controls, devices, kasa, sessions, streams, system, tares
+from vector.api.routers import cameras, controls, devices, sessions, streams, system, tares
 from vector.runtime.services import RuntimeServices
 
 
@@ -68,7 +68,6 @@ app.include_router(streams.router)
 app.include_router(devices.router)
 app.include_router(controls.router)
 app.include_router(cameras.router)
-app.include_router(kasa.router)
 app.include_router(sessions.router)
 app.include_router(tares.router)
 
