@@ -29,22 +29,26 @@ def to_core_value(value: ControlState | ControlValue | None) -> ControlValue | N
     return value
 
 
-# The core leaves range to the provider; these are the integers the wire types carry.
-_WIRE_INT_RANGE = {
+_FLOAT32_MAX = (2 - 2**-23) * 2.0**127  # largest finite IEEE 754 single
+
+# The core leaves range to the provider; these are the numbers the wire types carry.
+# A larger float would be sent as infinity.
+_WIRE_RANGE = {
     ControlType.UINT32: (0, 2**32 - 1),
     ControlType.INT32: (-(2**31), 2**31 - 1),
+    ControlType.FLOAT32: (-_FLOAT32_MAX, _FLOAT32_MAX),
 }
 
 
 def to_qlcp_state(control_type: ControlType, value: ControlValue) -> ControlState | int | float:
     """Inverse of ``to_core_value`` for outgoing CONTROL packets.
 
-    Raises ValueError for an integer the wire type cannot carry, so a bad
+    Raises ValueError for a number the wire type cannot carry, so a bad
     setpoint is refused before anything is tracked or sent.
     """
     if isinstance(value, bool):
         return ControlState.OPEN if value else ControlState.CLOSED
-    bounds = _WIRE_INT_RANGE.get(control_type)
+    bounds = _WIRE_RANGE.get(control_type)
     if bounds is not None and not bounds[0] <= value <= bounds[1]:
         message = f"{value!r} does not fit {control_type.name}."
         raise ValueError(message)

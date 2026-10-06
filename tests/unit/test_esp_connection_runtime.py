@@ -912,11 +912,13 @@ def test_out_of_range_setpoint_is_refused_without_dropping_the_node() -> None:
         device = _make_session(runtime)
         runtime.devices.register(device)
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
-        heater = device.core_source.control("HEATER1")  # declared UINT32
-
-        for value in (-1, 2**32):
-            with pytest.raises(ControlValidationError, match="UINT32"):
-                await state.core.set_control(heater, value)
+        # HEATER1 is declared UINT32 and HEATER2 FLOAT32.
+        for name, value, wire_type in (
+            ("HEATER1", -1, "UINT32"), ("HEATER1", 2**32, "UINT32"),
+            ("HEATER2", 1e39, "FLOAT32"), ("HEATER2", -1e39, "FLOAT32"),
+        ):
+            with pytest.raises(ControlValidationError, match=wire_type):
+                await state.core.set_control(device.core_source.control(name), value)
 
         assert _sent_packets(device) == []
         assert tracker.pending == ()
