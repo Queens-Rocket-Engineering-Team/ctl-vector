@@ -43,7 +43,7 @@ A `CoreChange` is one of three types, so each carries only the fields that apply
 
 Consumers branch with `match change:`. `SystemState` translates these into the existing client event types.
 
-Control values are `bool`, `int`, or `float`; `ControlType` has `BOOL`, `UINT32`, `INT32`, and `FLOAT32` members. The QLCP adapter translates OPEN/CLOSED into booleans. Kasa declares a boolean `power` control with no default.
+Control values are `bool`, `int`, or `float`; `ControlType` has `BOOL`, `UINT32`, `INT32`, and `FLOAT32` members. A `FLOAT32` value must be finite: the core refuses NaN and infinity for every provider, and records a non-finite report as an error. The QLCP adapter translates OPEN/CLOSED into booleans. Kasa declares a boolean `power` control with no default.
 
 A control's `default` describes device policy; registration does not send it or treat it as observed state. Supply `initial_controls` only when the provider already has observations, as Kasa does after discovery readback.
 

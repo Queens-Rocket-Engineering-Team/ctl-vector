@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import asyncio
+import math
 import subprocess
 import sys
 
@@ -281,6 +282,15 @@ def test_reported_errors_retain_the_last_value() -> None:
     ]
 
 
+def test_a_non_finite_report_is_recorded_as_an_error_with_the_last_value() -> None:
+    core = Core()
+    source = core.register_source("test", "source", controls=[ControlDefinition("HTR101", type=ControlType.FLOAT32)])
+    control = source.controls[0]
+    source.report_control(control, 20.0, now=11.0)
+    source.report_control(control, math.nan, now=12.0)
+    assert control.reported == ControlObservation(20.0, 12.0, ControlStatus.ERROR)
+
+
 def test_initial_controls_are_visible_during_registration_notification() -> None:
     core = Core()
     snapshots = []
@@ -339,7 +349,9 @@ def test_forged_and_foreign_bindings_fail_before_any_dispatch() -> None:
 @pytest.mark.parametrize(
     ("control_type", "invalid"),
     [(ControlType.BOOL, 1), (ControlType.UINT32, 1.5), (ControlType.UINT32, True),
-     (ControlType.INT32, 1.5), (ControlType.INT32, True), (ControlType.FLOAT32, True)],
+     (ControlType.INT32, 1.5), (ControlType.INT32, True), (ControlType.FLOAT32, True),
+     (ControlType.FLOAT32, math.nan), (ControlType.FLOAT32, math.inf), (ControlType.FLOAT32, -math.inf),
+     (ControlType.FLOAT32, 10**400)],
 )
 def test_invalid_typed_values_never_reach_the_provider(control_type: ControlType, invalid: ControlValue) -> None:
     core = Core()

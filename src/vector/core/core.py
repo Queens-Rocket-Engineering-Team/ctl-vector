@@ -429,7 +429,13 @@ def _validated_value(target: ControlBinding, value: ControlValue) -> ControlValu
             # Range/encoding constraints belong to the provider.
             return value
         case ControlType.FLOAT32 if type(value) in (int, float):
-            return float(value)
+            # NaN and infinity are not setpoints for any provider.
+            try:
+                number = float(value)
+            except OverflowError:
+                number = math.inf  # an int too large for a float is refused the same way
+            if math.isfinite(number):
+                return number
     message = f"Invalid value {value!r} for {target.name!r} ({target.type})."
     raise ControlValidationError(message)
 
