@@ -15,7 +15,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import NamedTuple, TypeVar
+from typing import TypeVar
 
 from vector.core.models import (
     ControlBinding,
@@ -29,6 +29,7 @@ from vector.core.models import (
     SensorBinding,
     SensorDefinition,
     SourceChanged,
+    TareCapture,
     TareChanged,
     TelemetryBatch,
     TelemetryReading,
@@ -62,14 +63,6 @@ class ControlDispatchError(Exception):
 
     When the provider raised, that exception is chained as ``__cause__``.
     """
-
-
-class TareCapture(NamedTuple):
-    """A computed offset and where it came from; apply it with ``Core.set_tare``."""
-
-    offset: float
-    source_name: str
-    sample_count: int
 
 
 @dataclass(slots=True)

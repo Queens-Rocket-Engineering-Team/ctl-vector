@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 
 if TYPE_CHECKING:
@@ -136,6 +136,14 @@ class TareChanged:
 
 # A synchronous state notification; consumers translate it into their own events.
 CoreChange = SourceChanged | ControlChanged | TareChanged
+
+
+class TareCapture(NamedTuple):
+    """A computed offset and where it came from; apply it with ``Core.set_tare``."""
+
+    offset: float
+    source_name: str
+    sample_count: int
 
 
 @dataclass(frozen=True, slots=True)
