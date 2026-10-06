@@ -81,9 +81,9 @@ class RuntimeServices:
         logger.info("Starting camera discovery daemon...")
         self._tasks["camera_connector"] = loop.create_task(self.camera_runtime.connect_all_cameras())
 
-        # Kasa discovery daemon
-        logger.info("Starting Kasa discovery daemon...")
-        self._tasks["kasa_discoverer"] = loop.create_task(self.kasa_runtime.discover())
+        # Kasa discovery, then liveness polling
+        logger.info("Starting Kasa daemon...")
+        self._tasks["kasa"] = loop.create_task(self.kasa_runtime.run())
 
         # Log stream daemon
         logger.info("Starting log stream daemon...")

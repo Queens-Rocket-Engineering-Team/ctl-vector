@@ -12,7 +12,7 @@ from kasa import KasaException
 from vector.api.routers.controls import ControlRequest, set_control
 from vector.api.routers.kasa import control_kasa_device, get_kasa_devices
 from vector.core import ControlDispatchError, Core
-from vector.runtime.kasa_runtime import KasaRuntime
+from vector.runtime.kasa_runtime import POLL_MISS_LIMIT, KasaRuntime
 from vector.runtime.session_telemetry import build_columns
 from vector.state.system_state import SystemState
 
@@ -138,6 +138,34 @@ def test_failed_readback_disconnects_only_that_source(monkeypatch: pytest.Monkey
         assert runtime.get_device(broken.host) is None
         assert runtime.get_device(healthy.host) is healthy
         assert state.kasa_active() == {broken.host: False, healthy.host: True}
+
+    asyncio.run(run())
+
+
+def test_polling_reports_hand_toggles_and_closes_an_unresponsive_plug(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run() -> None:
+        core = Core()
+        state = SystemState(core=core)
+        events: list[StateEvent] = []
+        state.set_publisher(events.append)
+        runtime = KasaRuntime(core=core)
+        quiet = _Device("192.168.1.5")
+        toggled = _Device("192.168.1.6")
+        await _discover(runtime, monkeypatch, quiet, toggled)
+        toggled.hardware_state = True  # switched at the wall, not through VECTOR
+        quiet.readback_error = KasaException("no route to host")
+
+        for _ in range(POLL_MISS_LIMIT - 1):
+            await runtime.poll_once()
+        quiet_source = core.source("kasa", quiet.host)
+        assert quiet_source is not None
+        assert quiet_source.connected
+        assert state.kasa_active() == {quiet.host: False, toggled.host: True}
+
+        await runtime.poll_once()
+        assert not quiet_source.connected
+        assert runtime.get_device(quiet.host) is None
+        assert [event["type"] for event in events[-2:]] == ["kasa.updated", "kasa.disconnected"]
 
     asyncio.run(run())
 
