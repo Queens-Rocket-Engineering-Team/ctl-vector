@@ -396,7 +396,7 @@ def test_disconnected_device_is_marked_disconnected() -> None:
 
 
 def test_command_lifecycle_events_increment_state_version() -> None:
-    state, tracker, qlcp, _events = _make_state()
+    state, tracker, qlcp, events = _make_state()
     device = _make_device()
     qlcp.register_device(device)
     command = _mark_sent(
@@ -407,11 +407,11 @@ def test_command_lifecycle_events_increment_state_version() -> None:
         requested_state=ControlState.CLOSED,
     )
 
-    sent_event = qlcp.record_command_sent(command)
+    qlcp.record_command_sent(command)
     tracker.mark_acked(device.connection_key, PacketType.CONTROL, 12, now=11.0)
-    acked_event = qlcp.record_command_acked(command)
+    qlcp.record_command_acked(command)
 
-    assert sent_event is not None
+    sent_event, acked_event = events[-2:]
     assert sent_event["type"] == "command.sent"
     assert sent_event["state_version"] == 2
     sent_payload = cast(dict[str, object], sent_event["command"])
@@ -430,7 +430,7 @@ def test_command_lifecycle_events_increment_state_version() -> None:
 
 
 def test_command_nack_and_timeout_events_include_command_state() -> None:
-    _state, tracker, qlcp, _events = _make_state()
+    _state, tracker, qlcp, events = _make_state()
     device = _make_device()
     qlcp.register_device(device)
     nacked_command = _mark_sent(
@@ -455,17 +455,16 @@ def test_command_nack_and_timeout_events_include_command_state() -> None:
         ErrorCode.INVALID_ID,
         now=11.0,
     )
-    nacked_event = qlcp.record_command_nacked(nacked_command)
+    qlcp.record_command_nacked(nacked_command)
     tracker.expire_pending(now=25.0, timeout_s=10.0)
-    timed_out_event = qlcp.record_command_timed_out(timed_out_command)
+    qlcp.record_command_timed_out(timed_out_command)
 
-    assert nacked_event is not None
+    nacked_event, timed_out_event = events[-2:]
     assert nacked_event["type"] == "command.nacked"
     nacked_payload = cast(dict[str, object], nacked_event["command"])
     assert nacked_payload["state"] == "nacked"
     assert nacked_payload["control_name"] == "VALVE1"
     assert nacked_payload["nack_error_code"] == "INVALID_ID"
-    assert timed_out_event is not None
     assert timed_out_event["type"] == "command.timed_out"
     timed_out_payload = cast(dict[str, object], timed_out_event["command"])
     assert timed_out_payload["state"] == "timed_out"
@@ -473,14 +472,14 @@ def test_command_nack_and_timeout_events_include_command_state() -> None:
 
 
 def test_heartbeat_event_summarizes_heartbeat_state() -> None:
-    _state, tracker, qlcp, _events = _make_state()
+    _state, tracker, qlcp, events = _make_state()
     device = _make_device()
     qlcp.register_device(device)
     heartbeat = _mark_sent(tracker, device, packet_type=PacketType.HEARTBEAT, now=10.0)
 
-    event = qlcp.record_command_sent(heartbeat)
+    qlcp.record_command_sent(heartbeat)
 
-    assert event is not None
+    event = events[-1]
     assert event["type"] == "heartbeat.updated"
     assert event["state_version"] == 2
     assert event["device_name"] == "TEST-DEVICE"
@@ -502,23 +501,24 @@ def test_old_heartbeat_does_not_emit_an_event_after_source_reconnects() -> None:
     version = state.state_version
     events.clear()
 
-    assert qlcp.record_command_acked(heartbeat) is None
+    qlcp.record_command_acked(heartbeat)
+
     assert events == []
     assert state.state_version == version
 
 
 def test_estop_commands_are_operator_visible_without_pending_ack() -> None:
-    state, tracker, qlcp, _events = _make_state()
+    state, tracker, qlcp, events = _make_state()
     device = _make_device()
     qlcp.register_device(device)
     estop = _mark_sent(tracker, device, packet_type=PacketType.ESTOP)
 
-    sent_event = qlcp.record_command_sent(estop)
+    qlcp.record_command_sent(estop)
+    sent_event = events[-1]
     snapshot = state.snapshot()
     expired = tracker.expire_pending(now=25.0, timeout_s=10.0)
 
     assert estop.ack_expected is False
-    assert sent_event is not None
     assert sent_event["type"] == "command.sent"
     payload = cast(dict[str, object], sent_event["command"])
     assert payload["packet_type"] == "ESTOP"
@@ -531,19 +531,19 @@ def test_estop_commands_are_operator_visible_without_pending_ack() -> None:
 
 
 def test_status_request_commands_are_not_operator_visible() -> None:
-    state, tracker, qlcp, _events = _make_state()
+    state, tracker, qlcp, events = _make_state()
     device = _make_device()
     qlcp.register_device(device)
     status_request = _mark_sent(tracker, device, packet_type=PacketType.STATUS_REQUEST)
+    events.clear()
 
-    sent_event = qlcp.record_command_sent(status_request)
+    qlcp.record_command_sent(status_request)
     pending_snapshot = state.snapshot()
     tracker.mark_acked(device.connection_key, PacketType.STATUS_REQUEST, 12, now=11.0)
-    acked_event = qlcp.record_command_acked(status_request)
+    qlcp.record_command_acked(status_request)
     completed_snapshot = state.snapshot()
 
-    assert sent_event is None
-    assert acked_event is None
+    assert events == []
     assert status_request.ack_expected is False
     assert state.state_version == 1
     assert tracker.pending == ()

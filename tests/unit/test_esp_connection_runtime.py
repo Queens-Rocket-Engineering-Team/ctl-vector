@@ -104,7 +104,6 @@ def _make_runtime() -> tuple[ESPConnectionRuntime, CommandTracker, SystemState, 
     runtime = ESPConnectionRuntime(
         command_tracker=tracker,
         system_state=state,
-        state_stream=stream,
     )
     return runtime, tracker, state, stream
 
@@ -779,12 +778,10 @@ def test_disconnection_metric_recorded_on_remove_device() -> None:
 
     tracker = CommandTracker()
     state = SystemState(core=Core())
-    stream = FakeStateStream()
     metrics = Metrics()
     runtime = ESPConnectionRuntime(
         command_tracker=tracker,
         system_state=state,
-        state_stream=stream,
         metrics=metrics,
     )
     device = _make_session(runtime)

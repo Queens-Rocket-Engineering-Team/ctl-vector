@@ -5,7 +5,7 @@ import socket
 import time
 from functools import partial
 from itertools import count
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import orjson
 
@@ -64,10 +64,6 @@ CONFIG_HANDSHAKE_TIMEOUT_S = 10.0
 def normalize_control_name(control_name: str) -> str:
     """Normalize a control name to the key format used by ESPDeviceSession.controls."""
     return control_name.upper()
-
-
-class _StatePublisher(Protocol):
-    def publish(self, event: dict[str, object] | None) -> None: ...
 
 
 class ESPDeviceSession:
@@ -171,7 +167,6 @@ class ESPConnectionRuntime:
     def __init__(
         self,
         *,
-        state_stream: _StatePublisher,
         command_tracker: CommandTracker,
         system_state: SystemState,
         metrics: Metrics | None = None,
@@ -181,7 +176,6 @@ class ESPConnectionRuntime:
         self.command_tracker = command_tracker
         self.core = system_state.core
         self.state_adapter = QLCPStateAdapter(system_state, command_tracker)
-        self.state_stream = state_stream
         self._connection_counter = count(1)
 
     def next_connection_key(self) -> str:
@@ -191,10 +185,6 @@ class ESPConnectionRuntime:
     def get_registered_devices(self) -> dict[str, ESPDeviceSession]:
         """Return a snapshot of the currently registered devices by address."""
         return self.devices.snapshot_by_address()
-
-    def _emit(self, event: dict[str, object] | None) -> None:
-        """Emit an event to the state stream."""
-        self.state_stream.publish(event)
 
     def is_current_connection(self, session: ESPDeviceSession) -> bool:
         """Return True if *session* is the currently registered session for its address."""
@@ -392,7 +382,7 @@ class ESPConnectionRuntime:
             self.command_tracker.discard(command.command_id)
             raise
 
-        self._emit(self.state_adapter.record_command_sent(command))
+        self.state_adapter.record_command_sent(command)
         return command
 
     async def send_timesync_response(
@@ -544,7 +534,7 @@ class ESPConnectionRuntime:
                 expired.packet_type.name,
                 expired.packet_sequence,
             )
-            self._emit(self.state_adapter.record_command_timed_out(expired))
+            self.state_adapter.record_command_timed_out(expired)
 
         return False
 
@@ -572,16 +562,16 @@ class ESPConnectionRuntime:
         if packet.ack_packet_type == PacketType.TIMESYNC_RESP:
             session.record_timesync_ack(command)
             if command is not None:
-                self._emit(self.state_adapter.record_command_acked(command))
+                self.state_adapter.record_command_acked(command)
             logger.debug("%s TIMESYNC_RESP ACK seq=%d", session.name, packet.ack_sequence)
         elif packet.ack_packet_type == PacketType.HEARTBEAT:
             session.record_heartbeat_ack(command)
             if command is not None:
-                self._emit(self.state_adapter.record_command_acked(command))
+                self.state_adapter.record_command_acked(command)
             logger.debug("%s HEARTBEAT ACK seq=%d", session.name, packet.ack_sequence)
         else:
             if command is not None:
-                self._emit(self.state_adapter.record_command_acked(command))
+                self.state_adapter.record_command_acked(command)
             logger.debug("%s ACK for %s seq=%d", session.name, packet.ack_packet_type.name, packet.ack_sequence)
 
         return command
@@ -604,7 +594,7 @@ class ESPConnectionRuntime:
                 packet.error_code.name,
             )
         else:
-            self._emit(self.state_adapter.record_command_nacked(command))
+            self.state_adapter.record_command_nacked(command)
 
         logger.debug("%s NACK for %s error=%s", session.name, packet.nack_packet_type.name, packet.error_code.name)
         return command
@@ -625,7 +615,7 @@ class ESPConnectionRuntime:
                 now=time.monotonic(),
             )
             if command is not None:
-                self._emit(self.state_adapter.record_command_acked(command))
+                self.state_adapter.record_command_acked(command)
 
         for control_state in packet.control_states:
             self.state_adapter.record_reported_control_state(
@@ -664,9 +654,8 @@ class ESPConnectionRuntime:
             heartbeat_task.cancel()
             logger.info("Cancelled heartbeat task for %s", session.name)
 
-        self._publish_failed_command_events(
-            self.command_tracker.fail_connection(session.connection_key, reason=reason),
-        )
+        for failed in self.command_tracker.fail_connection(session.connection_key, reason=reason):
+            self.state_adapter.record_command_timed_out(failed)
 
     def _teardown_session(self, session: ESPDeviceSession, *, reason: str) -> None:
         """Teardown a device session by cleaning it up and removing it from the registry."""
@@ -751,7 +740,7 @@ class ESPConnectionRuntime:
         """Handle a missed HEARTBEAT ACK for a device session, recording the miss and potentially removing the session if it exceeds the miss limit. Returns True if the session was removed, False otherwise."""
         self.metrics.record_heartbeat_miss(session.name)
         at_limit = session.register_missed_heartbeat()
-        self._emit(self.state_adapter.record_command_timed_out(command))
+        self.state_adapter.record_command_timed_out(command)
 
         if not at_limit:
             logger.debug(
@@ -766,11 +755,6 @@ class ESPConnectionRuntime:
         logger.error("%s unresponsive: missed %s HEARTBEAT ACKs", session.name, session.missed_heartbeat_count)
         self.remove_device(session)
         return True
-
-    def _publish_failed_command_events(self, commands: list[CommandRecord]) -> None:
-        """Publish state events for commands that have failed due to connection closure or timeout."""
-        for command in commands:
-            self._emit(self.state_adapter.record_command_timed_out(command))
 
     async def run_tcp_listener(self, *, port: int = TCP_PORT, backlog: int = 5) -> None:
         """Bind the TCP server socket and accept device connections until cancelled."""

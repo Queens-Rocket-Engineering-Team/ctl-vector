@@ -77,9 +77,9 @@ def source_identity(source: Source) -> dict[str, str]:
 class SystemState:
     """Versioned presentation of core resources and recording-session state.
 
-    Core changes publish automatically once ``set_publisher`` is installed.
-    Session and transport command methods return events for their existing callers
-    to publish. Live transport diagnostics do not advance ``state_version``.
+    Every event is published through ``publish_event`` once ``set_publisher`` is
+    installed: core changes, session changes, and the transport events the QLCP
+    adapter projects. Live transport diagnostics do not advance ``state_version``.
     """
 
     def __init__(self, *, core: Core) -> None:
@@ -137,32 +137,27 @@ class SystemState:
             "components": dict(self._session.components),
         }
 
-    def start_session(self, *, session_id: str, name: str, started_unix: float, started_monotonic: float) -> StateEvent:
+    def start_session(self, *, session_id: str, name: str, started_unix: float, started_monotonic: float) -> None:
         self._session = _SessionStateRecord(
             session_id=session_id,
             name=name,
             started_unix=started_unix,
             started_monotonic=started_monotonic,
         )
-        return self.make_event("session.started", session=self.session())
+        self.publish_event("session.started", session=self.session())
 
-    def update_session_components(self, components: dict[str, str]) -> StateEvent | None:
+    def update_session_components(self, components: dict[str, str]) -> None:
         if self._session is None:
-            return None
+            return
         self._session.components.update(components)
-        return self.make_event("session.updated", session=self.session())
+        self.publish_event("session.updated", session=self.session())
 
-    def stop_session(self, *, stopped_unix: float, end_reason: str) -> StateEvent | None:
+    def stop_session(self, *, stopped_unix: float, end_reason: str) -> None:
         if self._session is None:
-            return None
+            return
         session_id = self._session.session_id
         self._session = None
-        return self.make_event("session.stopped", session_id=session_id, stopped_unix=stopped_unix, end_reason=end_reason)
-
-    def record_session_warning(self, warning: str, detail: str | None = None) -> StateEvent | None:
-        if self._session is None:
-            return None
-        return self.make_event("session.warning", session_id=self._session.session_id, warning=warning, detail=detail)
+        self.publish_event("session.stopped", session_id=session_id, stopped_unix=stopped_unix, end_reason=end_reason)
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -255,18 +250,18 @@ class SystemState:
     def _on_core_change(self, change: CoreChange) -> None:
         match change:
             case TareChanged(sensor_name=sensor_name, offset=None):
-                event = self.make_event("tare.cleared", sensor_name=sensor_name)
+                self.publish_event("tare.cleared", sensor_name=sensor_name)
             case TareChanged(sensor_name=sensor_name, offset=offset):
-                event = self.make_event("tare.updated", sensor_name=sensor_name, offset=offset)
+                self.publish_event("tare.updated", sensor_name=sensor_name, offset=offset)
             case SourceChanged(kind=kind, source=source) if source.provider == "kasa":
                 event_type = "kasa.registered" if kind == "registered" else "kasa.disconnected"
-                event = self.make_event(event_type, kasa=self._snapshot_kasa(source))
+                self.publish_event(event_type, kasa=self._snapshot_kasa(source))
             case ControlChanged(control=control) if control.source.provider == "kasa":
-                event = self.make_event("kasa.updated", kasa=self._snapshot_kasa(control.source))
+                self.publish_event("kasa.updated", kasa=self._snapshot_kasa(control.source))
             case SourceChanged(kind="registered", source=source):
-                event = self.make_event("device.registered", device=self._snapshot_device(source))
+                self.publish_event("device.registered", device=self._snapshot_device(source))
             case SourceChanged(kind="closed", source=source):
-                event = self.make_event(
+                self.publish_event(
                     "device.disconnected",
                     device_name=source.name,
                     device_address=source.address,
@@ -275,11 +270,10 @@ class SystemState:
             case ControlChanged(control=control):
                 event_type = "control.error" if control.reported and control.reported.status is ControlStatus.ERROR else "control.updated"
                 source = control.source
-                event = self.make_event(event_type, device_name=source.name, control=self._snapshot_control(control), **source_identity(source))
-        if self._publisher:
-            self._publisher(event)
+                self.publish_event(event_type, device_name=source.name, control=self._snapshot_control(control), **source_identity(source))
 
-    def make_event(self, event_type: str, **payload: object) -> StateEvent:
-        """Version an already serialized session or transport event."""
+    def publish_event(self, event_type: str, **payload: object) -> None:
+        """Version an already serialized event and hand it to the publisher, if one is installed."""
         self._state_version += 1
-        return {"type": event_type, "state_version": self._state_version, **payload}
+        if self._publisher:
+            self._publisher({"type": event_type, "state_version": self._state_version, **payload})

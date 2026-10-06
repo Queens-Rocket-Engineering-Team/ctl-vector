@@ -111,13 +111,13 @@ def _make_runtime(
     _register_device(state)
     publisher = TelemetrySessionPublisher()
     stream = _FakeStateStream()
+    state.set_publisher(stream.publish)
     camera_runtime = _FakeCameraRuntime(cameras, camera_failures, hangs_on_stop=cameras_hang_on_stop, start_delay_s=camera_start_delay_s)
     audio_runtime = _FakeAudioRuntime(error=audio_error)
     runtime = SessionRuntime(
         paths=RecordingPaths.from_config({"root": str(tmp_path), "mediamtx_container_root": "/recordings"}),
         telemetry_publisher=publisher,
         system_state=state,
-        state_stream=stream,  # type: ignore[arg-type]
         camera_runtime=camera_runtime,  # type: ignore[arg-type]
         audio_runtime=audio_runtime,  # type: ignore[arg-type]
         shutdown_timeout_s=shutdown_timeout_s,

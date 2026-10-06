@@ -132,7 +132,6 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
     esp_runtime = ESPConnectionRuntime(
         command_tracker=command_tracker,
         system_state=system_state,
-        state_stream=state_stream,
         metrics=metrics,
     )
     # These consumers share the core's lifetime, so subscribe once here, not on
@@ -161,7 +160,6 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
         paths=recording_paths,
         telemetry_publisher=telemetry_session,
         system_state=system_state,
-        state_stream=state_stream,
         camera_runtime=camera_runtime,
         audio_runtime=audio_runtime,
     )

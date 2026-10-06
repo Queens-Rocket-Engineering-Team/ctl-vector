@@ -42,7 +42,7 @@ Video has a separate path: VECTOR supplies camera metadata and configures MediaM
 
 ## State snapshots and events
 
-[SystemState](../src/vector/state/system_state.py) assembles the client-facing state. It projects resource declarations, control observations, and tares from the [shared core](CORE.md), command history and connection health through the QLCP adapter, and recording status from the session runtime. Telemetry readings flow separately; the state snapshot is not a sensor-history store.
+[SystemState](../src/vector/state/system_state.py) assembles the client-facing state. It projects resource declarations, control observations, and tares from the [shared core](CORE.md), command history and connection health through the QLCP adapter, and recording status from the session runtime. Every event, whichever of those produced it, is versioned and published by `SystemState` itself; runtimes do not publish events of their own. Telemetry readings flow separately; the state snapshot is not a sensor-history store.
 
 [StateStream](../src/vector/runtime/state_stream.py) queues a snapshot before registering a new subscriber, then queues subsequent deltas in order. Losing a delta could leave a client permanently stale, so a full queue disconnects the client. There is no event replay on reconnect: the client should replace its view from the new snapshot. `GET /v1/state` provides the same state as a one-off read.
 

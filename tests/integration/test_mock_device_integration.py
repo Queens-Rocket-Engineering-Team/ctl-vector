@@ -87,7 +87,6 @@ async def _runtime_harness() -> AsyncGenerator[
     runtime = ESPConnectionRuntime(
         command_tracker=tracker,
         system_state=state,
-        state_stream=stream,
     )
 
     publisher = _CollectingPublisher()

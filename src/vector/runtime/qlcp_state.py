@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, overload
 from vector.core import ControlDefinition, ControlStatus, ControlType, SensorDefinition
 from vector.qlcp.enums import ControlConfirmStatus, ControlState, PacketType
 from vector.runtime.command_tracker import CommandRecord, CommandTracker, is_operator_visible
-from vector.state.system_state import StateEvent, SystemState, TransportHealth, control_state_name, source_identity
+from vector.state.system_state import SystemState, TransportHealth, control_state_name, source_identity
 
 
 if TYPE_CHECKING:
@@ -113,8 +113,8 @@ class CommandProjection:
 class QLCPStateAdapter:
     """Provider boundary used by the QLCP connection runtime.
 
-    Registration, observations, and close publish through the core subscription.
-    Command methods return projected events for the runtime's existing emitter.
+    Registration, observations, and close publish through the core subscription;
+    command methods publish their projected events through SystemState.
     """
 
     def __init__(self, state: SystemState, tracker: CommandTracker) -> None:
@@ -179,30 +179,29 @@ class QLCPStateAdapter:
             return None
         return TransportHealth(device.last_sync_time, device.missed_heartbeat_count)
 
-    def record_command_sent(self, command: CommandRecord) -> StateEvent | None:
-        return self._command_event("command.sent", command)
+    def record_command_sent(self, command: CommandRecord) -> None:
+        self._command_event("command.sent", command)
 
-    def record_command_acked(self, command: CommandRecord) -> StateEvent | None:
-        return self._command_event("command.acked", command)
+    def record_command_acked(self, command: CommandRecord) -> None:
+        self._command_event("command.acked", command)
 
-    def record_command_nacked(self, command: CommandRecord) -> StateEvent | None:
-        return self._command_event("command.nacked", command)
+    def record_command_nacked(self, command: CommandRecord) -> None:
+        self._command_event("command.nacked", command)
 
-    def record_command_timed_out(self, command: CommandRecord) -> StateEvent | None:
-        return self._command_event("command.timed_out", command)
+    def record_command_timed_out(self, command: CommandRecord) -> None:
+        self._command_event("command.timed_out", command)
 
-    def _command_event(self, event_type: str, command: CommandRecord) -> StateEvent | None:
+    def _command_event(self, event_type: str, command: CommandRecord) -> None:
         if command.packet_type == PacketType.HEARTBEAT:
             source = self.core.source("qlcp", command.device_name)
             if source is None or source.connection_key != command.connection_key:
-                return None
-            return self.state.make_event(
+                return
+            self.state.publish_event(
                 "heartbeat.updated",
                 device_name=source.name,
                 device_address=source.address,
                 **source_identity(source),
                 heartbeat=self.state.snapshot_heartbeat(source),
             )
-        if not is_operator_visible(command.packet_type):
-            return None
-        return self.state.make_event(event_type, command=self.commands.command(command))
+        elif is_operator_visible(command.packet_type):
+            self.state.publish_event(event_type, command=self.commands.command(command))

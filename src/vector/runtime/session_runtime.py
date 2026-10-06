@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     from vector.runtime.camera_runtime import CameraRuntime
     from vector.runtime.recording_paths import RecordingPaths
     from vector.runtime.session_telemetry import TelemetrySessionPublisher
-    from vector.runtime.state_stream import StateStream
     from vector.state.system_state import SystemState
 
 
@@ -97,7 +96,6 @@ class SessionRuntime:
         paths: RecordingPaths,
         telemetry_publisher: TelemetrySessionPublisher,
         system_state: SystemState,
-        state_stream: StateStream,
         camera_runtime: CameraRuntime,
         audio_runtime: AudioRuntime,
         shutdown_timeout_s: float = SHUTDOWN_FINALIZE_TIMEOUT_S,
@@ -106,7 +104,6 @@ class SessionRuntime:
         self._shutdown_timeout_s = shutdown_timeout_s
         self._publisher = telemetry_publisher
         self._system_state = system_state
-        self._state_stream = state_stream
         self._camera_runtime = camera_runtime
         self._audio_runtime = audio_runtime
         self._lock = asyncio.Lock()
@@ -134,20 +131,18 @@ class SessionRuntime:
 
             self._session = session
             try:
-                self._emit(
-                    self._system_state.start_session(
-                        session_id=session.session_id,
-                        name=session.name,
-                        started_unix=session.started_unix,
-                        started_monotonic=session.started_monotonic,
-                    ),
+                self._system_state.start_session(
+                    session_id=session.session_id,
+                    name=session.name,
+                    started_unix=session.started_unix,
+                    started_monotonic=session.started_monotonic,
                 )
                 self._write_metadata(session, status="active")
                 self._flush_task = asyncio.get_running_loop().create_task(self._flush_loop())
 
                 await self._start_components(session)
                 self._write_metadata(session, status="active")
-                self._emit(self._system_state.update_session_components({key: value["status"] for key, value in session.components.items()}))
+                self._system_state.update_session_components({key: value["status"] for key, value in session.components.items()})
             except BaseException:
                 # BaseException, not Exception: a client that disconnects mid-start
                 # cancels this task, and a session left half-started would refuse both
@@ -206,7 +201,7 @@ class SessionRuntime:
         if self._system_state.session() is None:
             return
         with contextlib.suppress(Exception):
-            self._emit(self._system_state.stop_session(stopped_unix=time.time(), end_reason=end_reason))
+            self._system_state.stop_session(stopped_unix=time.time(), end_reason=end_reason)
 
     async def finalize_on_shutdown(self) -> None:
         """Close out an in-progress session during server shutdown, best effort."""
@@ -406,7 +401,7 @@ class SessionRuntime:
         stopped_unix = time.time()
         metadata = self._metadata(session, status="completed", end_reason=end_reason, stopped_unix=stopped_unix, stopped_monotonic=time.monotonic())
         self._write_json(session.directory / SESSION_METADATA_FILENAME, metadata)
-        self._emit(self._system_state.stop_session(stopped_unix=stopped_unix, end_reason=end_reason))
+        self._system_state.stop_session(stopped_unix=stopped_unix, end_reason=end_reason)
         return metadata
 
     async def _flush_loop(self) -> None:
@@ -522,9 +517,6 @@ class SessionRuntime:
         summary["status"] = metadata.get("status", "unknown")
         summary["started_unix"] = metadata.get("clock", {}).get("started_unix")
         return summary
-
-    def _emit(self, event: dict[str, object] | None) -> None:
-        self._state_stream.publish(event)
 
 
 def _files_in(directory: Path) -> list[Path]:

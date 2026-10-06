@@ -90,7 +90,7 @@ async def _harness(root: Path) -> AsyncGenerator[tuple[ESPConnectionRuntime, Sys
     state = SystemState(core=Core())
     stream = _FakeStateStream()
     state.set_publisher(stream.publish)  # type: ignore[arg-type]
-    esp_runtime = ESPConnectionRuntime(command_tracker=CommandTracker(), system_state=state, state_stream=stream)  # type: ignore[arg-type]
+    esp_runtime = ESPConnectionRuntime(command_tracker=CommandTracker(), system_state=state)
     publisher = TelemetrySessionPublisher()
     telemetry_runtime = TelemetryRuntime(esp_runtime.get_device_by_address)
     state.core.subscribe_samples(publisher.publish_batch)
@@ -98,7 +98,6 @@ async def _harness(root: Path) -> AsyncGenerator[tuple[ESPConnectionRuntime, Sys
         paths=RecordingPaths.from_config({"root": str(root), "mediamtx_container_root": "/recordings"}),
         telemetry_publisher=publisher,
         system_state=state,
-        state_stream=stream,  # type: ignore[arg-type]
         camera_runtime=_NoCameras(),  # type: ignore[arg-type]
         audio_runtime=_UnreachableAudio(),  # type: ignore[arg-type]
     )

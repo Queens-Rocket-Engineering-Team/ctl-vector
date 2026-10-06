@@ -51,7 +51,6 @@ def _make_runtime() -> tuple[ESPConnectionRuntime, CommandTracker, FakeStateStre
     runtime = ESPConnectionRuntime(
         command_tracker=tracker,
         system_state=system_state,
-        state_stream=state_stream,
     )
     return runtime, tracker, state_stream
 
