@@ -428,21 +428,17 @@ class Core:
 
 
 def _validated_value(target: ControlBinding, value: ControlValue) -> ControlValue:
-    control_type = target.type
-    valid = False
-    if control_type == ControlType.BOOL:
-        valid = isinstance(value, bool)
-    elif control_type in (ControlType.UINT32, ControlType.INT32):
-        # Range/encoding constraints belong to the provider, as before extraction.
-        valid = type(value) is int
-    elif control_type == ControlType.FLOAT32:
-        valid = type(value) in (int, float)
-        if valid:
+    # type() rather than isinstance(): bool is a subclass of int, and True is not a setpoint.
+    match target.type:
+        case ControlType.BOOL if isinstance(value, bool):
+            return value
+        case ControlType.UINT32 | ControlType.INT32 if type(value) is int:
+            # Range/encoding constraints belong to the provider.
+            return value
+        case ControlType.FLOAT32 if type(value) in (int, float):
             return float(value)
-    if not valid:
-        message = f"Invalid value {value!r} for {target.name!r} ({control_type})."
-        raise ControlValidationError(message)
-    return value
+    message = f"Invalid value {value!r} for {target.name!r} ({target.type})."
+    raise ControlValidationError(message)
 
 
 def _owns(bindings: tuple[_Binding, ...], binding: _Binding) -> bool:
