@@ -254,16 +254,6 @@ class Core:
         if previous is not None:
             previous._retire()
         self._sources[provider, key] = source
-        for control in source.controls:
-            # Legal, since a command names its source; warn because recording
-            # control columns are keyed by name alone and will conflate them.
-            others = [
-                f"{other.provider}:{other.key}"
-                for other in self._sources.values()
-                if other is not source and other.connected and other.control(control.name) is not None
-            ]
-            if others:
-                logger.warning("Control %r on %s:%s is also declared by %s.", control.name, provider, key, ", ".join(others))
         self._changed(SourceChanged("registered", source))
         return source
 

@@ -129,6 +129,12 @@ def build_columns(schema: RecordingSchema, *, readings: Sequence[TelemetryReadin
         # Group first, then control name, so the layout is one rule end to end.
         for control in sorted(schema.controls, key=lambda item: (_slug(item.group), item.name))
     )
+    # The same control name on two sources is two controls, but cells are looked up
+    # by name alone, so both columns would carry whichever source was listed last.
+    names = [control.name for control in schema.controls]
+    shared = sorted({name for name in names if names.count(name) > 1})
+    if shared:
+        logger.warning("Controls declared by more than one source record one source's state: %s", ", ".join(shared))
 
     kasa_keys = kasa_column_keys(schema.kasa)
     kasa = tuple(sorted(((f"kasa_{key}", host) for host, key in kasa_keys.items()), key=lambda item: item[0]))

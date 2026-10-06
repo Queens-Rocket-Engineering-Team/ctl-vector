@@ -14,7 +14,7 @@ A new sensor service only needs to register its definitions and publish measurem
 
 One source can declare many sensors and controls. Several sources can declare the same resource name. Within one source, control names are unique ignoring case, and a registration that repeats one is rejected. Sensor lookup and tares use exact names; control lookup is case-insensitive. The core keeps each source's metadata and control observations separate and does not select a preferred sensor path.
 
-A control is identified by its source and name. The same control name on two sources is two controls, and the core logs a warning at registration because recording control columns are keyed by name alone.
+A control is identified by its source and name. The same control name on two sources is two controls. The recorder logs a warning when it builds columns for such controls, because its control columns are keyed by name alone.
 
 Source names are display labels and may repeat. Telemetry and state projections carry `source_provider` and `source_key`; use that pair for stable identity and `connection_key` to distinguish connections. For example, `("wireless", "pad")` and `("qlcp", "pad")` remain separate even if both are named `Pad`. CSV rows retain the label in `source` and append the same two identity columns.
 

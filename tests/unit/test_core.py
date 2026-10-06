@@ -97,9 +97,7 @@ def test_duplicate_control_names_within_a_source_are_rejected() -> None:
     assert core.sources() == ()
 
 
-def test_shared_control_names_across_sources_are_allowed_with_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    warnings: list[tuple[object, ...]] = []
-    monkeypatch.setattr("vector.core.core.logger.warning", lambda _message, *args: warnings.append(args))
+def test_shared_control_names_across_sources_are_distinct_controls() -> None:
     core = Core()
     ground = core.register_source("test", "ground", controls=[ControlDefinition("AV101")])
     flight = core.register_source("test", "flight", controls=[ControlDefinition("av101")])
@@ -107,7 +105,6 @@ def test_shared_control_names_across_sources_are_allowed_with_a_warning(monkeypa
     assert core.sources() == (ground, flight)
     assert ground.control("AV101") is ground.controls[0]
     assert flight.control("AV101") is flight.controls[0]
-    assert [args[-1] for args in warnings] == ["test:ground"]
 
 
 def test_tare_uses_raw_history_and_only_changes_subsequent_samples() -> None:

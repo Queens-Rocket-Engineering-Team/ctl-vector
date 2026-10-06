@@ -16,6 +16,8 @@ from vector.runtime.session_telemetry import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+
 
 @dataclass
 class _Kasa:
@@ -143,6 +145,17 @@ def test_control_group_becomes_the_column_prefix() -> None:
     plan = build_columns(schema)  # type: ignore[arg-type]
 
     assert [name for name, _, _, _ in plan.controls] == ["heater_HEATER1", "relay_IGNRUN", "valve_AV205"]
+
+
+def test_a_control_name_shared_by_two_sources_is_warned_about_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr("vector.runtime.session_telemetry.logger.warning", lambda _message, *args: warnings.append(args))
+    schema = _Schema(controls=(_control("AV101", "valve"), _control("HTR", "heater"), _control("AV101", "valve")))
+
+    plan = build_columns(schema)  # type: ignore[arg-type]
+
+    assert [name for name, _, _, _ in plan.controls] == ["heater_HTR", "valve_AV101", "valve_AV101"]
+    assert warnings == [("AV101",)]
 
 
 def test_control_group_with_punctuation_is_sanitized() -> None:
