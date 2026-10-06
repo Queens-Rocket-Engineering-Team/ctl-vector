@@ -382,7 +382,7 @@ class ESPConnectionRuntime:
             self.command_tracker.discard(command.command_id)
             raise
 
-        self.state_adapter.record_command_sent(command)
+        self.state_adapter.record_command(command)
         return command
 
     async def send_timesync_response(
@@ -534,7 +534,7 @@ class ESPConnectionRuntime:
                 expired.packet_type.name,
                 expired.packet_sequence,
             )
-            self.state_adapter.record_command_timed_out(expired)
+            self.state_adapter.record_command(expired)
 
         return False
 
@@ -562,16 +562,16 @@ class ESPConnectionRuntime:
         if packet.ack_packet_type == PacketType.TIMESYNC_RESP:
             session.record_timesync_ack(command)
             if command is not None:
-                self.state_adapter.record_command_acked(command)
+                self.state_adapter.record_command(command)
             logger.debug("%s TIMESYNC_RESP ACK seq=%d", session.name, packet.ack_sequence)
         elif packet.ack_packet_type == PacketType.HEARTBEAT:
             session.record_heartbeat_ack(command)
             if command is not None:
-                self.state_adapter.record_command_acked(command)
+                self.state_adapter.record_command(command)
             logger.debug("%s HEARTBEAT ACK seq=%d", session.name, packet.ack_sequence)
         else:
             if command is not None:
-                self.state_adapter.record_command_acked(command)
+                self.state_adapter.record_command(command)
             logger.debug("%s ACK for %s seq=%d", session.name, packet.ack_packet_type.name, packet.ack_sequence)
 
         return command
@@ -594,7 +594,7 @@ class ESPConnectionRuntime:
                 packet.error_code.name,
             )
         else:
-            self.state_adapter.record_command_nacked(command)
+            self.state_adapter.record_command(command)
 
         logger.debug("%s NACK for %s error=%s", session.name, packet.nack_packet_type.name, packet.error_code.name)
         return command
@@ -615,7 +615,7 @@ class ESPConnectionRuntime:
                 now=time.monotonic(),
             )
             if command is not None:
-                self.state_adapter.record_command_acked(command)
+                self.state_adapter.record_command(command)
 
         for control_state in packet.control_states:
             self.state_adapter.record_reported_control_state(
@@ -655,7 +655,7 @@ class ESPConnectionRuntime:
             logger.info("Cancelled heartbeat task for %s", session.name)
 
         for failed in self.command_tracker.fail_connection(session.connection_key, reason=reason):
-            self.state_adapter.record_command_timed_out(failed)
+            self.state_adapter.record_command(failed)
 
     def _teardown_session(self, session: ESPDeviceSession, *, reason: str) -> None:
         """Teardown a device session by cleaning it up and removing it from the registry."""
@@ -740,7 +740,7 @@ class ESPConnectionRuntime:
         """Handle a missed HEARTBEAT ACK for a device session, recording the miss and potentially removing the session if it exceeds the miss limit. Returns True if the session was removed, False otherwise."""
         self.metrics.record_heartbeat_miss(session.name)
         at_limit = session.register_missed_heartbeat()
-        self.state_adapter.record_command_timed_out(command)
+        self.state_adapter.record_command(command)
 
         if not at_limit:
             logger.debug(

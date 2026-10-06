@@ -1,7 +1,8 @@
 """Translate QLCP sessions and tracker diagnostics into the shared core and GUI.
 
-Only this adapter knows both wire configuration/enum types and core definitions.
-It retains sessions for live transport health; SystemState receives scalar views.
+Wire types meet core definitions here and in the connection runtime's control
+handler, which reuses the value conversions below. The adapter retains sessions
+for live transport health; SystemState receives scalar views.
 """
 
 from __future__ import annotations
@@ -179,19 +180,8 @@ class QLCPStateAdapter:
             return None
         return TransportHealth(device.last_sync_time, device.missed_heartbeat_count)
 
-    def record_command_sent(self, command: CommandRecord) -> None:
-        self._command_event("command.sent", command)
-
-    def record_command_acked(self, command: CommandRecord) -> None:
-        self._command_event("command.acked", command)
-
-    def record_command_nacked(self, command: CommandRecord) -> None:
-        self._command_event("command.nacked", command)
-
-    def record_command_timed_out(self, command: CommandRecord) -> None:
-        self._command_event("command.timed_out", command)
-
-    def _command_event(self, event_type: str, command: CommandRecord) -> None:
+    def record_command(self, command: CommandRecord) -> None:
+        """Publish a tracker transition; the event type follows the record's lifecycle state."""
         if command.packet_type == PacketType.HEARTBEAT:
             source = self.core.source("qlcp", command.device_name)
             if source is None or source.connection_key != command.connection_key:
@@ -204,4 +194,4 @@ class QLCPStateAdapter:
                 heartbeat=self.state.snapshot_heartbeat(source),
             )
         elif is_operator_visible(command.packet_type):
-            self.state.publish_event(event_type, command=self.commands.command(command))
+            self.state.publish_event(f"command.{command.state.value}", command=self.commands.command(command))

@@ -407,9 +407,9 @@ def test_command_lifecycle_events_increment_state_version() -> None:
         requested_state=ControlState.CLOSED,
     )
 
-    qlcp.record_command_sent(command)
+    qlcp.record_command(command)
     tracker.mark_acked(device.connection_key, PacketType.CONTROL, 12, now=11.0)
-    qlcp.record_command_acked(command)
+    qlcp.record_command(command)
 
     sent_event, acked_event = events[-2:]
     assert sent_event["type"] == "command.sent"
@@ -455,9 +455,9 @@ def test_command_nack_and_timeout_events_include_command_state() -> None:
         ErrorCode.INVALID_ID,
         now=11.0,
     )
-    qlcp.record_command_nacked(nacked_command)
+    qlcp.record_command(nacked_command)
     tracker.expire_pending(now=25.0, timeout_s=10.0)
-    qlcp.record_command_timed_out(timed_out_command)
+    qlcp.record_command(timed_out_command)
 
     nacked_event, timed_out_event = events[-2:]
     assert nacked_event["type"] == "command.nacked"
@@ -477,7 +477,7 @@ def test_heartbeat_event_summarizes_heartbeat_state() -> None:
     qlcp.register_device(device)
     heartbeat = _mark_sent(tracker, device, packet_type=PacketType.HEARTBEAT, now=10.0)
 
-    qlcp.record_command_sent(heartbeat)
+    qlcp.record_command(heartbeat)
 
     event = events[-1]
     assert event["type"] == "heartbeat.updated"
@@ -501,7 +501,7 @@ def test_old_heartbeat_does_not_emit_an_event_after_source_reconnects() -> None:
     version = state.state_version
     events.clear()
 
-    qlcp.record_command_acked(heartbeat)
+    qlcp.record_command(heartbeat)
 
     assert events == []
     assert state.state_version == version
@@ -513,7 +513,7 @@ def test_estop_commands_are_operator_visible_without_pending_ack() -> None:
     qlcp.register_device(device)
     estop = _mark_sent(tracker, device, packet_type=PacketType.ESTOP)
 
-    qlcp.record_command_sent(estop)
+    qlcp.record_command(estop)
     sent_event = events[-1]
     snapshot = state.snapshot()
     expired = tracker.expire_pending(now=25.0, timeout_s=10.0)
@@ -537,10 +537,10 @@ def test_status_request_commands_are_not_operator_visible() -> None:
     status_request = _mark_sent(tracker, device, packet_type=PacketType.STATUS_REQUEST)
     events.clear()
 
-    qlcp.record_command_sent(status_request)
+    qlcp.record_command(status_request)
     pending_snapshot = state.snapshot()
     tracker.mark_acked(device.connection_key, PacketType.STATUS_REQUEST, 12, now=11.0)
-    qlcp.record_command_acked(status_request)
+    qlcp.record_command(status_request)
     completed_snapshot = state.snapshot()
 
     assert events == []
