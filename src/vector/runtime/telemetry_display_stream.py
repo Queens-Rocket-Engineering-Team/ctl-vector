@@ -162,8 +162,8 @@ class TelemetryDisplayStream(BoundedWebSocketFanout):
             device_bucket = _DeviceBucket(
                 source_provider=batch.source_provider,
                 source_key=batch.source_key,
-                device_name=batch.device_name,
-                device_address=batch.device_address,
+                device_name=batch.source_name,
+                device_address=batch.source_address,
                 connection_key=batch.connection_key,
                 bucket_index=bucket_index,
                 bucket_start_s=bucket_index * self._bucket_interval_s,
@@ -179,8 +179,8 @@ class TelemetryDisplayStream(BoundedWebSocketFanout):
                 buf = _SensorBuffer(
                     sensor_id=reading.sensor_id,
                     sensor_name=reading.sensor_name,
-                    unit_name=reading.unit_name,
-                    sensor_type=reading.sensor_type,
+                    unit_name=reading.unit,
+                    sensor_type=reading.group,
                 )
                 device_bucket.sensors[reading.sensor_id] = buf
             buf.add(batch.timestamp_s, reading.value)

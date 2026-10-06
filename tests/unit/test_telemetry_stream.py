@@ -48,8 +48,8 @@ def _make_batch() -> TelemetryBatch:
     return TelemetryBatch(
         source_provider="qlcp",
         source_key="MockDevice",
-        device_name="MockDevice",
-        device_address="10.0.0.184",
+        source_name="MockDevice",
+        source_address="10.0.0.184",
         connection_key="esp-1",
         timestamp_s=98269.746,
         readings=(
@@ -57,8 +57,8 @@ def _make_batch() -> TelemetryBatch:
                 sensor_id=0,
                 sensor_name="PT101",
                 value=123.4,
-                unit_name="PSI",
-                sensor_type="pressure_transducer",
+                unit="PSI",
+                group="pressure_transducer",
                 tare=6.6,
             ),
         ),

@@ -268,7 +268,7 @@ def test_telemetry_stream_readings_match_config() -> None:
                 sensor = config_sensors.get(reading.sensor_id)
                 assert sensor is not None, f"Unknown sensor_id {reading.sensor_id} in batch"
                 assert reading.sensor_name == sensor.name, f"sensor_id {reading.sensor_id}: name {reading.sensor_name!r} != config {sensor.name!r}"
-                assert reading.unit_name == sensor.unit, f"sensor {sensor.name}: unit {reading.unit_name!r} != config {sensor.unit!r}"
+                assert reading.unit == sensor.unit, f"sensor {sensor.name}: unit {reading.unit!r} != config {sensor.unit!r}"
 
             # Stop streaming and confirm the mock acknowledges it.
             dev.stream_stopped.clear()
@@ -417,7 +417,7 @@ def test_custom_config_sensor_ids_match_readings() -> None:
             assert len(batch.readings) == 1
             reading = batch.readings[0]
             assert reading.sensor_name == "LC101"
-            assert reading.unit_name == "N"
+            assert reading.unit == "N"
 
     asyncio.run(run())
 

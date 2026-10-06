@@ -74,15 +74,15 @@ def _make_reading(
     sensor_id: int = 0,
     sensor_name: str = "PT101",
     value: float = 100.0,
-    unit_name: str = "PSI",
-    sensor_type: str = "pressure_transducer",
+    unit: str = "PSI",
+    group: str = "pressure_transducer",
 ) -> TelemetryReading:
     return TelemetryReading(
         sensor_id=sensor_id,
         sensor_name=sensor_name,
         value=value,
-        unit_name=unit_name,
-        sensor_type=sensor_type,
+        unit=unit,
+        group=group,
     )
 
 
@@ -97,8 +97,8 @@ def _make_batch(
     return TelemetryBatch(
         source_provider=source_provider,
         source_key=source_key,
-        device_name=device_name,
-        device_address="10.0.0.1",
+        source_name=device_name,
+        source_address="10.0.0.1",
         connection_key=connection_key,
         timestamp_s=timestamp_s,
         readings=readings if readings is not None else (_make_reading(),),

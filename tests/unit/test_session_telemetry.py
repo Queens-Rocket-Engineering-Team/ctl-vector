@@ -66,14 +66,14 @@ def _batch(
     return TelemetryBatch(
         source_provider=source_provider,
         source_key=source_key if source_key is not None else device_name,
-        device_name=device_name,
-        device_address="10.0.0.1",
+        source_name=device_name,
+        source_address="10.0.0.1",
         connection_key="10.0.0.1:1",
         timestamp_s=timestamp_s,
         timestamp_source="server_receive",
         timestamp_synced=False,
         readings=tuple(
-            TelemetryReading(sensor_id=index, sensor_name=name, value=value, unit_name="PSI", sensor_type="pressure_transducer")
+            TelemetryReading(sensor_id=index, sensor_name=name, value=value, unit="PSI", group="pressure_transducer")
             for index, (name, value) in enumerate(values.items())
         ),
     )

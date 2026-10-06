@@ -69,8 +69,8 @@ def test_listener_publishes_decoded_batches_once() -> None:
         await _drive(listener, _free_udp_port(), packet.encode(), stop=lambda: bool(batches))
 
         assert len(batches) == 1
-        assert batches[0].device_name == "MockDevice"
-        assert batches[0].device_address == "127.0.0.1"
+        assert batches[0].source_name == "MockDevice"
+        assert batches[0].source_address == "127.0.0.1"
         assert batches[0].readings[0].value == 12.5
 
     asyncio.run(run())

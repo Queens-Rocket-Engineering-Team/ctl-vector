@@ -33,8 +33,8 @@ class TelemetryStreamRuntime(BoundedWebSocketFanout):
             "type": "telemetry.raw_batch",
             "source_provider": batch.source_provider,
             "source_key": batch.source_key,
-            "device_name": batch.device_name,
-            "device_address": batch.device_address,
+            "device_name": batch.source_name,
+            "device_address": batch.source_address,
             "connection_key": batch.connection_key,
             "timestamp_s": batch.timestamp_s,
             "timestamp_source": batch.timestamp_source,
@@ -47,8 +47,8 @@ class TelemetryStreamRuntime(BoundedWebSocketFanout):
                     # Server-applied tare offset. The untared reading is `value + tare`,
                     # so recordings taken from this stream stay reversible.
                     "tare": reading.tare,
-                    "unit": reading.unit_name,
-                    "sensor_type": reading.sensor_type,
+                    "unit": reading.unit,
+                    "sensor_type": reading.group,
                 }
                 for reading in batch.readings
             ],

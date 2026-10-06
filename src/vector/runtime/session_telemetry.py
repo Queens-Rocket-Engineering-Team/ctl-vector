@@ -116,7 +116,7 @@ def build_columns(schema: RecordingSchema, *, readings: Sequence[TelemetryReadin
     """
     units = {sensor.name: sensor.unit for sensor in schema.sensors}
     for reading in readings:
-        units.setdefault(reading.sensor_name, reading.unit_name)
+        units.setdefault(reading.sensor_name, reading.unit)
     sensor_names = tuple(sorted(units))
 
     controls = tuple(
@@ -218,7 +218,7 @@ class SessionTelemetryWriter:
         control_states = self._state.control_states()
         kasa_active = self._state.kasa_active()
 
-        cells = [f"{batch.timestamp_s:.4f}", batch.device_name]
+        cells = [f"{batch.timestamp_s:.4f}", batch.source_name]
         # A sensor missing from this batch leaves an empty cell rather than a zero, so a
         # gap is distinguishable from a real reading of zero.
         cells += [f"{values[name]:.4f}" if name in values else "" for name in self.plan.sensor_names]

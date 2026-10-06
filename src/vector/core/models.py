@@ -148,31 +148,28 @@ class TareCapture(NamedTuple):
 
 @dataclass(frozen=True, slots=True)
 class TelemetryReading:
-    """A reading after taring; ``value + tare`` recovers the submitted raw value.
-
-    The ordinal and field names preserve the existing telemetry consumer format.
-    """
+    """A reading after taring; ``value + tare`` recovers the submitted raw value."""
 
     sensor_id: int
     sensor_name: str
     value: float
-    unit_name: str
-    sensor_type: str
+    unit: str
+    group: str
     tare: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
 class TelemetryBatch:
-    """A normalized batch. Legacy ``device_*`` names describe any source, not just nodes.
+    """One source's readings at one instant.
 
-    Key consumers by ``(source_provider, source_key)``; ``device_name`` is a label
+    Key consumers by ``(source_provider, source_key)``; ``source_name`` is a label
     and may collide or change. Include ``connection_key`` when separating reconnects.
     """
 
     source_provider: str
     source_key: str
-    device_name: str
-    device_address: str
+    source_name: str
+    source_address: str
     connection_key: str
     timestamp_s: float
     readings: tuple[TelemetryReading, ...]

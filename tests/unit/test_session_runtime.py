@@ -129,13 +129,13 @@ def _batch(value: float = 1.0) -> TelemetryBatch:
     return TelemetryBatch(
         source_provider="qlcp",
         source_key="MockDevice",
-        device_name="MockDevice",
-        device_address="10.0.0.1",
+        source_name="MockDevice",
+        source_address="10.0.0.1",
         connection_key="10.0.0.1:1",
         timestamp_s=100.0,
         timestamp_source="server_receive",
         timestamp_synced=False,
-        readings=(TelemetryReading(sensor_id=0, sensor_name="PT101", value=value, unit_name="PSI", sensor_type="pressure_transducer"),),
+        readings=(TelemetryReading(sensor_id=0, sensor_name="PT101", value=value, unit="PSI", group="pressure_transducer"),),
     )
 
 

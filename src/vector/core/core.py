@@ -395,8 +395,8 @@ class Core:
         batch = TelemetryBatch(
             source_provider=source.provider,
             source_key=source.key,
-            device_name=source.name,
-            device_address=source.address,
+            source_name=source.name,
+            source_address=source.address,
             connection_key=source.connection_key,
             timestamp_s=timestamp_s,
             readings=tuple(readings),

@@ -83,7 +83,7 @@ def test_duplicate_sensor_declarations_keep_independent_ordinal_readings() -> No
 
     assert first is not None
     assert [reading.sensor_id for reading in first.readings] == [0, 1]
-    assert [reading.unit_name for reading in first.readings] == ["psi", "kPa"]
+    assert [reading.unit for reading in first.readings] == ["psi", "kPa"]
     assert core.capture_tare_offset("PT101") == (1.5, "source", 2)
     assert source.sensor("PT101") is source.sensors[1]
     batch = source.publish_samples([("PT101", 3.0)], 2.0)
@@ -202,7 +202,7 @@ def test_batches_preserve_source_identity_when_labels_and_connections_collide(
 
     assert [(batch.source_provider, batch.source_key) for batch in batches] == [("a", "sensor"), other_identity]
     assert [batch.readings[0].value for batch in batches] == [-60.0, -70.0]
-    assert [batch.device_name for batch in batches] == ["Antenna", "Antenna"]
+    assert [batch.source_name for batch in batches] == ["Antenna", "Antenna"]
     assert [batch.connection_key for batch in batches] == ["shared", "shared"]
 
 
@@ -217,7 +217,7 @@ def test_batch_identity_survives_rename_and_reconnect() -> None:
     assert after is not None
     assert (before.source_provider, before.source_key) == (after.source_provider, after.source_key)
     assert (after.source_provider, after.source_key) == ("wireless", "radio-1")
-    assert (before.device_name, after.device_name) == ("Antenna", "Pad antenna")
+    assert (before.source_name, after.source_name) == ("Antenna", "Pad antenna")
     assert before.connection_key != after.connection_key
     assert not old.connected
     assert new.connected

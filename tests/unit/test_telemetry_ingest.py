@@ -92,8 +92,8 @@ def test_data_packet_from_registered_session_produces_batch() -> None:
     batch = ingest.handle_datagram(packet.encode(), session.address)
 
     assert batch is not None
-    assert batch.device_name == "PANDA"
-    assert batch.device_address == session.address
+    assert batch.source_name == "PANDA"
+    assert batch.source_address == session.address
     assert batch.connection_key == "conn-a"
     # 12345 us of device (server-base) time == 0.012345 s, on the same axis as time.monotonic().
     assert batch.timestamp_s == pytest.approx(0.012345)
@@ -107,15 +107,15 @@ def test_data_packet_from_registered_session_produces_batch() -> None:
             sensor_id=0,
             sensor_name="TC1",
             value=batch.readings[0].value,
-            unit_name="C",
-            sensor_type="thermocouple",
+            unit="C",
+            group="thermocouple",
         ),
         TelemetryReading(
             sensor_id=1,
             sensor_name="TC2",
             value=batch.readings[1].value,
-            unit_name="C",
-            sensor_type="thermocouple",
+            unit="C",
+            group="thermocouple",
         ),
     )
 
