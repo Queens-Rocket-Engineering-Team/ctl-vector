@@ -114,6 +114,8 @@ class Source:
         self._sensors = {sensor.name: sensor for sensor in self.sensors}
         self._controls = {control.name.upper(): control for control in self.controls}
         self._accepted: dict[int, ControlObservation] = {}
+        # Recent raw samples by sensor name, for tare capture while this source is current.
+        self._history: dict[str, _SampleBuffer] = {}
         self._reported = {
             self._controls[name.upper()].id: ControlObservation(
                 value=_validated_value(self._controls[name.upper()], observation.value) if observation.value is not None else None,
@@ -217,7 +219,7 @@ class Source:
     def _retire(self) -> None:
         self._connected = False
         self._control_handler = None
-        self._core._discard_history(self)
+        self._history.clear()
 
 
 class Core:
@@ -227,7 +229,6 @@ class Core:
         self._sources: dict[tuple[str, str], Source] = {}
         self._next_generation = 0
         self._tares: dict[str, float] = {}
-        self._history: dict[tuple[Source, str], _SampleBuffer] = {}
         self._sample_subscribers: list[Callable[[TelemetryBatch], None]] = []
         self._change_subscribers: list[Callable[[CoreChange], None]] = []
 
@@ -367,10 +368,10 @@ class Core:
         now = time.monotonic()
         candidates = [
             (source, buffer)
-            for (source, name), buffer in self._history.items()
-            if name == sensor_name
-            and self._is_current(source)
+            for source in self._sources.values()
+            if self._is_current(source)
             and device_name in (None, source.name, f"{source.provider}:{source.key}")
+            and (buffer := source._history.get(sensor_name)) is not None
             and buffer.values
             and now - buffer.last_updated_monotonic <= TARE_SAMPLE_MAX_AGE_S
         ]
@@ -395,10 +396,6 @@ class Core:
     def _is_current(self, source: Source) -> bool:
         return source.connected and self._sources.get((source.provider, source.key)) is source
 
-    def _discard_history(self, source: Source) -> None:
-        for binding in source.sensors:
-            self._history.pop((source, binding.name), None)
-
     def _publish_samples(
         self,
         source: Source,
@@ -421,11 +418,10 @@ class Core:
         readings = []
         for binding, raw_value in resolved:
             definition = binding.definition
-            history_key = (source, definition.name)
-            buffer = self._history.get(history_key)
+            buffer = source._history.get(definition.name)
             if buffer is None:
                 buffer = _SampleBuffer()
-                self._history[history_key] = buffer
+                source._history[definition.name] = buffer
             buffer.values.append(raw_value)
             buffer.last_updated_monotonic = now
             tare = self._tares.get(definition.name, 0.0)
