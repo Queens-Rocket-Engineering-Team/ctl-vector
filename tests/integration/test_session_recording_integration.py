@@ -20,6 +20,7 @@ from tests.mock_device import MockSensorDevice
 from vector.core import Core
 from vector.runtime.command_tracker import CommandTracker
 from vector.runtime.esp_connection_runtime import ESPConnectionRuntime
+from vector.runtime.qlcp_state import StreamSetting
 from vector.runtime.recording_paths import RecordingPaths
 from vector.runtime.session_archive import iter_session_zip
 from vector.runtime.session_runtime import SessionRuntime
@@ -141,19 +142,19 @@ def test_session_records_telemetry_metadata_and_a_downloadable_archive(tmp_path:
             status = await session_runtime.start("Hot Fire 3")
             session_id = status["id"]
 
-            await esp_runtime.start_streaming(session, 100)
+            await esp_runtime.set_stream(StreamSetting(enabled=True, frequency_hz=100))
             assert await _wait_for(lambda: session_runtime.read_metadata(session_id)["telemetry"]["rows"] > 5)
 
             # Flip a valve mid-recording; the column must follow.
             device.control_handled.clear()
-            await esp_runtime.set_control(session, "AV101", "CLOSED")
+            await state.core.set_control(session.core_source.control("AV101"), False)
             await asyncio.wait_for(device.control_handled.wait(), timeout=3.0)
             assert await _wait_for(lambda: state.control_states().get("AV101") == "CLOSED")
 
             rows_at_flip = session_runtime.read_metadata(session_id)["telemetry"]["rows"]
             assert await _wait_for(lambda: session_runtime.read_metadata(session_id)["telemetry"]["rows"] > rows_at_flip + 5)
 
-            await esp_runtime.stop_streaming(session)
+            await esp_runtime.set_stream(StreamSetting(enabled=False, frequency_hz=100))
             metadata = await session_runtime.stop()
 
         session_dir = tmp_path / session_id

@@ -11,7 +11,7 @@ import orjson
 
 from vector.core import ControlDispatchError, ControlValidationError
 from vector.drivers.esp import ESPDriver, ESPDriverConnectionClosedError
-from vector.qlcp.config_parser import QLCPConfigError, cast_control_state, parse_config
+from vector.qlcp.config_parser import parse_config
 from vector.qlcp.enums import ControlState, PacketType
 from vector.qlcp.native import get_timestamp_us
 from vector.qlcp.packets import (
@@ -32,7 +32,7 @@ from vector.qlcp.packets import (
 )
 from vector.runtime.device_registry import DeviceRegistry
 from vector.runtime.metrics import Metrics
-from vector.runtime.qlcp_state import QLCPStateAdapter, StreamSetting, to_core_value, to_qlcp_state
+from vector.runtime.qlcp_state import QLCPStateAdapter, StreamSetting, to_qlcp_state
 
 
 logger = logging.getLogger(__name__)
@@ -59,11 +59,6 @@ TrackedCommandPacket = (
 
 TCP_PORT = 50000
 CONFIG_HANDSHAKE_TIMEOUT_S = 10.0
-
-
-def normalize_control_name(control_name: str) -> str:
-    """Normalize a control name to the key format used by ESPDeviceSession.controls."""
-    return control_name.upper()
 
 
 class ESPDeviceSession:
@@ -115,7 +110,7 @@ class ESPDeviceSession:
 
     @property
     def controls(self) -> dict[str, ControlConfig]:
-        """Controls keyed by uppercased name; look up with normalize_control_name()."""
+        """Controls keyed by uppercased name."""
         return {control.name.upper(): control for control in self.qlcp_config.controls_by_id.values()}
 
     def register_missed_heartbeat(self) -> bool:
@@ -441,53 +436,6 @@ class ESPConnectionRuntime:
     async def get_single(self, session: ESPDeviceSession) -> bool:
         """Request a single data sample from the device. Returns True if the command was sent."""
         return await self._send_or_remove(session, GetSinglePacket.create(), "GET_SINGLE command")
-
-    async def start_streaming(self, session: ESPDeviceSession, frequency_hz: int) -> bool:
-        """Request the device to start streaming data at the given frequency. Returns True if sent."""
-        if not frequency_hz or frequency_hz < 1 or frequency_hz > 65535:
-            logger.error("Invalid frequency: %d. Must be between 1-65535 Hz.", frequency_hz)
-            return False
-        return await self._send_or_remove(
-            session,
-            StreamStartPacket.create(frequency_hz=frequency_hz),
-            f"STREAM_START ({frequency_hz} Hz)",
-        )
-
-    async def stop_streaming(self, session: ESPDeviceSession) -> bool:
-        """Request the device to stop streaming data. Returns True if sent."""
-        return await self._send_or_remove(session, StreamStopPacket.create(), "STREAM_STOP command")
-
-    async def set_control(
-        self,
-        session: ESPDeviceSession,
-        control_name: str,
-        control_state: str,
-    ) -> bool:
-        """Request the device to set a control to a given state. Returns True if sent.
-
-        BOOL controls take OPEN or CLOSED; numeric controls take a number.
-        """
-        control_name = normalize_control_name(control_name)
-
-        if control_name not in session.controls:
-            logger.error("Invalid control name '%s'. Valid: %s", control_name, list(session.controls.keys()))
-            return False
-
-        control = session.controls[control_name]
-        try:
-            state = cast_control_state(control.type, control_state)
-        except QLCPConfigError:
-            logger.error("Invalid state '%s' for %s control '%s'", control_state, control.type.name, control_name)
-            return False
-
-        source = session.core_source
-        if source is None:
-            return False
-        try:
-            await self.core.set_control(source.controls[control.id], to_core_value(state))
-        except (ControlValidationError, ControlDispatchError):
-            return False
-        return True
 
     async def _write_control(self, session: ESPDeviceSession, target: ControlBinding, value: ControlValue) -> int:
         """Core callback: translate a typed value to QLCP and preserve its command ID."""

@@ -494,11 +494,11 @@ def test_runtime_nack_routes_through_tracker_without_control_update() -> None:
 
 def test_set_control_sends_integer_state_for_variable_control() -> None:
     async def run() -> None:
-        runtime, _tracker, _state, _stream = _make_runtime()
+        runtime, _tracker, state, _stream = _make_runtime()
         device = _make_session(runtime)
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
-        assert await runtime.set_control(device, "HEATER1", "75") is True
+        assert await state.core.set_control(device.core_source.control("HEATER1"), 75) is not None
 
         packet = _sent_packets(device)[-1]
         assert isinstance(packet, ControlPacket)
@@ -510,38 +510,16 @@ def test_set_control_sends_integer_state_for_variable_control() -> None:
 
 def test_set_control_sends_float_state_for_variable_control() -> None:
     async def run() -> None:
-        runtime, _tracker, _state, _stream = _make_runtime()
+        runtime, _tracker, state, _stream = _make_runtime()
         device = _make_session(runtime)
         runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
-        assert await runtime.set_control(device, "HEATER2", "62.5") is True
+        assert await state.core.set_control(device.core_source.control("HEATER2"), 62.5) is not None
 
         packet = _sent_packets(device)[-1]
         assert isinstance(packet, ControlPacket)
         assert packet.control_type == ControlType.FLOAT32
         assert packet.control_state == 62.5
-
-    asyncio.run(run())
-
-
-def test_set_control_rejects_non_numeric_state_for_variable_control() -> None:
-    async def run() -> None:
-        runtime, _tracker, _state, _stream = _make_runtime()
-        device = _make_session(runtime)
-
-        assert await runtime.set_control(device, "HEATER1", "OPEN") is False
-        assert _sent_packets(device) == []
-
-    asyncio.run(run())
-
-
-def test_set_control_rejects_numeric_state_for_bool_control() -> None:
-    async def run() -> None:
-        runtime, _tracker, _state, _stream = _make_runtime()
-        device = _make_session(runtime)
-
-        assert await runtime.set_control(device, "VALVE1", "75") is False
-        assert _sent_packets(device) == []
 
     asyncio.run(run())
 
@@ -947,8 +925,8 @@ def test_core_dispatch_preserves_each_bindings_wire_type() -> None:
             (1, ControlType.INT32, -25),
         ]
 
-        # The existing name-only entry point resolves case-insensitively within the node.
-        assert await runtime.set_control(device, "htr101", "15")
+        # Control lookup is case-insensitive within the node.
+        await state.core.set_control(device.core_source.control("htr101"), 15)
         last_packet = cast("ControlPacket", _sent_packets(device)[-1])
         assert last_packet.control_id == 1
         assert last_packet.control_state == 15

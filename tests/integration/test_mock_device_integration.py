@@ -122,6 +122,14 @@ async def _wait_for(condition: Any, *, timeout_s: float = 2.0, tick: float = 0.0
     return False
 
 
+async def _set_control(runtime: ESPConnectionRuntime, session: ESPDeviceSession, name: str, value: bool) -> None:
+    """Dispatch one control through the core, as every endpoint does."""
+    assert session.core_source is not None
+    target = session.core_source.control(name)
+    assert target is not None, f"No control {name!r} on {session.name}"
+    await runtime.core.set_control(target, value)
+
+
 def _session_for(runtime: ESPConnectionRuntime, device_name: str) -> ESPDeviceSession:
     """Return the registered session for device_name, or raise AssertionError."""
     for session in runtime.devices.values():
@@ -183,14 +191,14 @@ def test_control_command_acked_and_state_updated() -> None:
 
             # Clear the event before sending so we can reliably await it.
             dev.control_handled.clear()
-            await runtime.set_control(session, "AV101", "CLOSED")
+            await _set_control(runtime, session, "AV101", False)
 
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
 
             assert dev.control_states.get("AV101") == "CLOSED"
 
             dev.control_handled.clear()
-            await runtime.set_control(session, "SAFE24", "CLOSED")
+            await _set_control(runtime, session, "SAFE24", False)
 
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
 
@@ -223,11 +231,11 @@ def test_control_command_closed() -> None:
             session = _session_for(runtime, dev.device_name)
 
             dev.control_handled.clear()
-            await runtime.set_control(session, "AV101", "OPEN")
+            await _set_control(runtime, session, "AV101", True)
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
 
             dev.control_handled.clear()
-            await runtime.set_control(session, "AV101", "CLOSED")
+            await _set_control(runtime, session, "AV101", False)
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
 
             assert dev.control_states.get("AV101") == "CLOSED"
@@ -252,7 +260,7 @@ def test_telemetry_stream_readings_match_config() -> None:
 
             # Start streaming at 20 Hz for fast batch accumulation.
             dev.stream_started.clear()
-            await runtime.start_streaming(session, frequency_hz=20)
+            await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=20))
             await asyncio.wait_for(dev.stream_started.wait(), timeout=2.0)
 
             # Wait for at least 3 batches.
@@ -273,7 +281,7 @@ def test_telemetry_stream_readings_match_config() -> None:
 
             # Stop streaming and confirm the mock acknowledges it.
             dev.stream_stopped.clear()
-            await runtime.stop_streaming(session)
+            await runtime.set_stream(StreamSetting(enabled=False, frequency_hz=20))
             await asyncio.wait_for(dev.stream_stopped.wait(), timeout=2.0)
             assert not dev.streaming
 
@@ -347,19 +355,19 @@ def test_estop_stops_streaming_and_resets_state() -> None:
 
             # Close a valve so we can verify ESTOP resets it back to its OPEN default.
             dev.control_handled.clear()
-            await runtime.set_control(session, "AV101", "CLOSED")
+            await _set_control(runtime, session, "AV101", False)
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
             assert dev.control_states.get("AV101") == "CLOSED"
 
             # Close a relay so we can verify ESTOP resets it back to its OPEN default.
             dev.control_handled.clear()
-            await runtime.set_control(session, "SAFE24", "CLOSED")
+            await _set_control(runtime, session, "SAFE24", False)
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
             assert dev.control_states.get("SAFE24") == "CLOSED"
 
             # Start streaming.
             dev.stream_started.clear()
-            await runtime.start_streaming(session, frequency_hz=10)
+            await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=10))
             await asyncio.wait_for(dev.stream_started.wait(), timeout=2.0)
             assert dev.streaming
 
@@ -456,10 +464,9 @@ def test_tare_set_mid_stream_offsets_readings_without_losing_the_raw_value() -> 
             ) as dev,
         ):
             await asyncio.wait_for(dev.timesync_received.wait(), timeout=2.0)
-            session = _session_for(runtime, dev.device_name)
 
             dev.stream_started.clear()
-            await runtime.start_streaming(session, frequency_hz=20)
+            await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=20))
             await asyncio.wait_for(dev.stream_started.wait(), timeout=2.0)
 
             reached = await _wait_for(lambda: len(publisher.batches) >= 3, timeout_s=2.0)
@@ -495,7 +502,7 @@ def test_tare_set_mid_stream_offsets_readings_without_losing_the_raw_value() -> 
             assert reached, "No batches arrived after the tare was cleared"
             assert _reading_for(publisher.batches[cleared_at], "PT101").tare == 0.0
 
-            await runtime.stop_streaming(session)
+            await runtime.set_stream(StreamSetting(enabled=False, frequency_hz=20))
 
     asyncio.run(run())
 

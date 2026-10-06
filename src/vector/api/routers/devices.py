@@ -1,45 +1,17 @@
 import logging
-from collections.abc import Iterable
-from typing import Annotated, Literal, Union
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from vector.api.deps import get_runtime
 from vector.api.models import CommandResponse
-from vector.qlcp.config_parser import QLCPConfigError, cast_control_state
-from vector.runtime.esp_connection_runtime import ESPDeviceSession, normalize_control_name
 from vector.runtime.qlcp_state import StreamSetting
 from vector.runtime.services import RuntimeServices
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["devices"])
-
-
-class GetSingleCommand(BaseModel):
-    command: Literal["GETS"]
-
-
-class StopCommand(BaseModel):
-    command: Literal["STOP"]
-
-
-class StreamCommand(BaseModel):
-    command: Literal["STREAM"]
-    frequency_hz: int = Field(gt=0, le=65535)
-
-
-class ControlCommand(BaseModel):
-    command: Literal["CONTROL"]
-    control_name: str
-    control_state: Literal["OPEN", "CLOSED"] | int | float
-
-
-CommandRequest = Annotated[
-    Union[GetSingleCommand, StopCommand, StreamCommand, ControlCommand],
-    Field(discriminator="command"),
-]
 
 
 class StreamRequest(BaseModel):
@@ -64,76 +36,6 @@ class AutoDiscoveryConfig(BaseModel):
 
     enabled: bool
     interval_seconds: float = Field(alias="intervalSeconds")
-
-
-def _control_targets(cmd: ControlCommand, devices: Iterable[ESPDeviceSession]) -> list[ESPDeviceSession]:
-    """Devices carrying the named control, raising 400 if the state does not fit that control's type."""
-    control_name = normalize_control_name(cmd.control_name)
-    state = str(cmd.control_state)
-    targets: list[ESPDeviceSession] = []
-
-    for device in devices:
-        control = device.controls.get(control_name)
-        if control is None:
-            continue
-        try:
-            cast_control_state(control.type, state)
-        except QLCPConfigError:
-            raise HTTPException(
-                400,
-                f"Invalid state {state!r} for {control.type.name} control {cmd.control_name!r} on {device.name}.",
-            ) from None
-        targets.append(device)
-
-    return targets
-
-
-@router.post(
-    "/v1/command",
-    summary="Send a command to the devices on the network",
-)
-async def send_device_command(
-    cmd: CommandRequest,
-    rt: Annotated[RuntimeServices, Depends(get_runtime)],
-) -> CommandResponse:
-    logger.info("Command sent: %r", cmd.command)
-
-    devices = list(rt.esp_runtime.get_registered_devices().values())
-
-    match cmd:
-        case GetSingleCommand():
-            targets = devices
-            sent = [device.name for device in targets if await rt.esp_runtime.get_single(device)]
-        case StopCommand():
-            targets = devices
-            sent = [device.name for device in targets if await rt.esp_runtime.stop_streaming(device)]
-        case StreamCommand(frequency_hz=freq):
-            targets = devices
-            sent = [device.name for device in targets if await rt.esp_runtime.start_streaming(device, freq)]
-        case ControlCommand(control_name=control_name, control_state=control_state):
-            targets = _control_targets(cmd, devices)
-            state = str(control_state)
-            sent = [device.name for device in targets if await rt.esp_runtime.set_control(device, control_name, state)]
-
-    if not targets:
-        raise HTTPException(400, "No valid target devices for the command")
-    if not sent:
-        raise HTTPException(
-            502,
-            f"Command {cmd.command!r} failed to send to all target devices: {', '.join(device.name for device in targets)}.",
-        )
-
-    if len(sent) < len(targets):
-        failed = [device.name for device in targets if device.name not in sent]
-        return CommandResponse(
-            status="partial",
-            message=f"Command {cmd.command!r} sent to {', '.join(sent)}; failed for {', '.join(failed)}.",
-        )
-
-    return CommandResponse(
-        status="sent",
-        message=f"Command {cmd.command!r} sent to {', '.join(sent)}.",
-    )
 
 
 @router.get("/v1/stream", summary="Get the stand-wide DATA stream setting")

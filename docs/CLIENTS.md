@@ -25,7 +25,7 @@ Desktop HELM owns the acquisition policy: it requests preview readings outside r
 
 REST routes validate input and call the appropriate runtime. The main groups are [controls](../src/vector/api/routers/controls.py), [devices and commands](../src/vector/api/routers/devices.py), [tares](../src/vector/api/routers/tares.py), [sessions](../src/vector/api/routers/sessions.py), [cameras](../src/vector/api/routers/cameras.py), and [Kasa outlets](../src/vector/api/routers/kasa.py). FastAPI's `/docs` page describes their request parameters. Some POST routes use query parameters, so consult the route rather than assuming every request takes JSON.
 
-`POST /v1/control` sets one control on one source through the [shared core](CORE.md), for QLCP nodes and Kasa plugs alike. The JSON body names the source as `<source_provider>:<source_key>`, copied from the state snapshot, the control by name, and a value matching the control's declared type: `true` or `false` for BOOL, an integer for UINT32 and INT32, a finite number for FLOAT32. A value the control cannot take is 400, an unknown target is 404, a disconnected source is 409, and a failed send is 502. The response reports `submitted` and, for QLCP, the tracker `command_id`. The older `/v1/command` CONTROL form, which fans out by name across nodes, and the `/v1/kasa` POST remain for existing clients.
+`POST /v1/control` sets one control on one source through the [shared core](CORE.md), for QLCP nodes and Kasa plugs alike. The JSON body names the source as `<source_provider>:<source_key>`, copied from the state snapshot, the control by name, and a value matching the control's declared type: `true` or `false` for BOOL, an integer for UINT32 and INT32, a finite number for FLOAT32. A value the control cannot take is 400, an unknown target is 404, a disconnected source is 409, and a failed send is 502. The response reports `submitted` and, for QLCP, the tracker `command_id`. There is no fan-out by name: a client that wants the same control on several nodes sends one request per node. The `/v1/kasa` POST remains for existing clients.
 
 `POST /v1/stream` sets the DATA stream rate for the whole stand as declared state: `{"enabled": true, "frequency_hz": 190}`, either field optional. VECTOR applies it to every connected node immediately and to each node as it registers, so a node that reconnects resumes streaming without client action. The response lists the nodes reached. `GET /v1/stream` reads the setting, the state snapshot carries it as `stream`, and a change publishes `stream.updated`.
 
@@ -56,7 +56,7 @@ Key sources by `(source_provider, source_key)`, not by the display label: differ
 
 There are several distinct observations along a command's path:
 
-- The `/v1/command` result (`sent`, `partial`, or an error) describes transmission to the selected nodes and does not return tracker command IDs. `/v1/control` returns the command ID for its single target. Neither waits for a device response.
+- The `/v1/control` result describes transmission to its single target and returns the tracker command ID. It does not wait for a device response.
 - A `command.acked` event means the tracked response arrived. For CONTROL, this is normally a correlated QLCP STATUS packet, even though the lifecycle name says `acked`.
 - `reported_state` and `reported_status` describe the node's report. `pending` means the node reports ongoing actuation; `error` preserves the last known value while reporting the fault.
 
