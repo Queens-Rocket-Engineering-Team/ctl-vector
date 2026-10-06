@@ -254,25 +254,25 @@ class SystemState:
 
     def _on_core_change(self, change: CoreChange) -> None:
         match change:
-            case TareChanged(sensor_name, None):
+            case TareChanged(sensor_name=sensor_name, offset=None):
                 event = self.make_event("tare.cleared", sensor_name=sensor_name)
-            case TareChanged(sensor_name, offset):
+            case TareChanged(sensor_name=sensor_name, offset=offset):
                 event = self.make_event("tare.updated", sensor_name=sensor_name, offset=offset)
-            case SourceChanged(kind, source) if source.provider == "kasa":
+            case SourceChanged(kind=kind, source=source) if source.provider == "kasa":
                 event_type = "kasa.registered" if kind == "registered" else "kasa.disconnected"
                 event = self.make_event(event_type, kasa=self._snapshot_kasa(source))
-            case ControlChanged(control) if control.source.provider == "kasa":
+            case ControlChanged(control=control) if control.source.provider == "kasa":
                 event = self.make_event("kasa.updated", kasa=self._snapshot_kasa(control.source))
-            case SourceChanged("registered", source):
+            case SourceChanged(kind="registered", source=source):
                 event = self.make_event("device.registered", device=self._snapshot_device(source))
-            case SourceChanged("closed", source):
+            case SourceChanged(kind="closed", source=source):
                 event = self.make_event(
                     "device.disconnected",
                     device_name=source.name,
                     device_address=source.address,
                     **source_identity(source),
                 )
-            case ControlChanged(control):
+            case ControlChanged(control=control):
                 event_type = "control.error" if control.reported and control.reported.status is ControlStatus.ERROR else "control.updated"
                 source = control.source
                 event = self.make_event(event_type, device_name=source.name, control=self._snapshot_control(control), **source_identity(source))
