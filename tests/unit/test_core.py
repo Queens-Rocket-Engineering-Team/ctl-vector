@@ -272,7 +272,7 @@ def test_reported_errors_retain_the_last_value() -> None:
     source.report_control("av101", False, status=ControlStatus.PENDING, now=11.0)
     control = source.controls[0]
     assert control.reported == ControlObservation(False, 11.0, ControlStatus.PENDING)
-    source.report_control("AV101", None, status="error", now=12.0)
+    source.report_control("AV101", None, status=ControlStatus.ERROR, now=12.0)
     assert control.reported == ControlObservation(False, 12.0, ControlStatus.ERROR)
     assert changes == [
         SourceChanged("registered", source),

@@ -13,7 +13,7 @@ import math
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import NamedTuple, TypeVar
 
@@ -115,14 +115,11 @@ class Source:
         self._controls = {control.name.upper(): control for control in self.controls}
         # Recent raw samples by sensor name, for tare capture while this source is current.
         self._history: dict[str, _SampleBuffer] = {}
-        self._reported = {
-            self._controls[name.upper()].id: ControlObservation(
-                value=_validated_value(self._controls[name.upper()], observation.value) if observation.value is not None else None,
-                timestamp=observation.timestamp,
-                status=ControlStatus(observation.status) if observation.status is not None else None,
-            )
-            for name, observation in initial_controls.items()
-        }
+        self._reported: dict[int, ControlObservation] = {}
+        for control_name, observation in initial_controls.items():
+            control = self._controls[control_name.upper()]
+            value = observation.value if observation.value is None else _validated_value(control, observation.value)
+            self._reported[control.id] = replace(observation, value=value)
         self._control_handler = control_handler
         self._connected = True
 
@@ -168,7 +165,7 @@ class Source:
         name: str | ControlBinding,
         value: ControlValue | None,
         *,
-        status: ControlStatus | str = ControlStatus.CONFIRMED,
+        status: ControlStatus = ControlStatus.CONFIRMED,
         now: float | None = None,
     ) -> None:
         """Report hardware feedback, retaining the last known value on an error.
@@ -180,7 +177,6 @@ class Source:
         control = self._resolve_control(name)
         if control is None or not self._core._is_current(self):
             return
-        status = ControlStatus(status)
         if status != ControlStatus.ERROR and value is not None:
             try:
                 value = _validated_value(control, value)

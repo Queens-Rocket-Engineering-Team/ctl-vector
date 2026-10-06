@@ -53,7 +53,7 @@ class ControlObservation:
 
     value: ControlValue | None
     timestamp: float
-    status: ControlStatus | None = None
+    status: ControlStatus
 
 
 @dataclass(frozen=True, slots=True)

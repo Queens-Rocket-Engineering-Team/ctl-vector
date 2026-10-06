@@ -26,7 +26,7 @@ Import public types from `vector.core`. The implementation is split into [models
 |---|---|---|
 | Provider | `core.register_source(provider, key, sensors=..., controls=..., control_handler=...)` | A `Source` handle for this registration. |
 | Provider | `source.publish_samples(samples, timestamp_s=...)` | Submits raw physical-unit values as `(sensor_name, value)` or `(sensor_binding, value)` pairs. |
-| Provider | `source.report_control(...)` | Records the device's reported control state, read back as `control.reported`. |
+| Provider | `source.report_control(...)` | Records the device's reported control state, read back as `control.reported`: a `ControlObservation` whose `status` is always a `ControlStatus`. |
 | Provider | `source.close()` | Disables its publishing and commands while retaining descriptions and last-known state. |
 | Consumer | `core.source()`, `sources()`, `sensors()`, then `source.controls` | Reads the catalog, including source identity and availability. |
 | Consumer | `core.subscribe_samples(callback)`, `subscribe_changes(callback)` | Receives synchronous updates for the core's lifetime. |
