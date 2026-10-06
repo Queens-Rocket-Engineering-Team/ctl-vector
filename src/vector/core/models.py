@@ -107,6 +107,7 @@ class ControlBinding:
 
     @property
     def reported(self) -> ControlObservation | None:
+        """The source's latest report, read live; keep the observation for a fixed reading."""
         return self.source._reported.get(self.id)  # noqa: SLF001
 
 
