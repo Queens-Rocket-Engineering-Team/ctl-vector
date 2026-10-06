@@ -10,6 +10,7 @@ import pytest
 from vector.core import (
     TARE_SAMPLE_MAX_AGE_S,
     ControlBinding,
+    ControlChanged,
     ControlDefinition,
     ControlObservation,
     ControlStatus,
@@ -19,6 +20,7 @@ from vector.core import (
     Core,
     DispatchResult,
     SensorDefinition,
+    SourceChanged,
     TareCaptureError,
 )
 
@@ -278,8 +280,11 @@ def test_accepted_and_reported_state_are_separate_and_errors_retain_last_value()
     source.report_control("AV101", None, status="error", now=12.0)
     assert control.reported == ControlObservation(False, 12.0, ControlStatus.ERROR)
     assert control.accepted == ControlObservation(True, 10.0)
-    assert [change.kind for change in changes] == [
-        "source.registered", "control.accepted", "control.reported", "control.reported",
+    assert changes == [
+        SourceChanged("registered", source),
+        ControlChanged("accepted", control),
+        ControlChanged("reported", control),
+        ControlChanged("reported", control),
     ]
 
 
@@ -454,7 +459,7 @@ def test_subscriber_failure_is_isolated() -> None:
     source = core.register_source("test", "source", sensors=[SensorDefinition("PT101")])
     first = source.publish_samples([("PT101", 1.0)], 1.0)
     assert batches == [first]
-    assert [change.kind for change in changes] == ["source.registered"]
+    assert changes == [SourceChanged("registered", source)]
 
 
 def test_a_batch_with_an_unknown_sensor_publishes_nothing() -> None:

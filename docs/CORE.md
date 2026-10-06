@@ -33,7 +33,15 @@ Import public types from `vector.core`. The implementation is split into [models
 | Command caller | `await core.set_control(target, value)` | Validates one explicit target and value, then returns its `DispatchResult`. |
 | Tare caller | `core.capture_tare_offset(...)`, `set_tare(...)`, `clear_tare(...)`, `tares()` | Computes an offset from recent raw samples, then shares it across sources reporting the exact sensor name. Capture does not apply the offset; `set_tare` does. |
 
-A `CoreChange` carries a `ChangeKind` (`source.registered`, `source.closed`, `control.accepted`, `control.reported`, `tare.updated`, or `tare.cleared`) and the source, control, or sensor it concerns. `SystemState` translates these into the existing client event types.
+A `CoreChange` is one of three types, so each carries only the fields that apply to it:
+
+| Type | Fields | Meaning |
+| --- | --- | --- |
+| `SourceChanged` | `kind` (`"registered"` or `"closed"`), `source` | A registration began or ended. |
+| `ControlChanged` | `kind` (`"accepted"` or `"reported"`), `control` | Read the new state from `control.accepted` or `control.reported`; the source is `control.source`. |
+| `TareChanged` | `sensor_name`, `offset` | A shared offset was set, or cleared when `offset` is `None`. |
+
+Consumers branch with `match change:`. `SystemState` translates these into the existing client event types.
 
 Control values are `bool`, `int`, or `float`; `ControlType` has `BOOL`, `UINT32`, `INT32`, and `FLOAT32` members. The QLCP adapter translates OPEN/CLOSED into booleans. Kasa declares a boolean `power` control with no default.
 

@@ -18,8 +18,8 @@ from types import MappingProxyType
 from typing import NamedTuple, TypeVar
 
 from vector.core.models import (
-    ChangeKind,
     ControlBinding,
+    ControlChanged,
     ControlDefinition,
     ControlObservation,
     ControlStatus,
@@ -29,6 +29,8 @@ from vector.core.models import (
     DispatchResult,
     SensorBinding,
     SensorDefinition,
+    SourceChanged,
+    TareChanged,
     TelemetryBatch,
     TelemetryReading,
     TimestampSource,
@@ -184,7 +186,7 @@ class Source:
             timestamp=time.monotonic() if now is None else now,
             status=status,
         )
-        self._core._changed(CoreChange(ChangeKind.CONTROL_REPORTED, source=self, control=control))
+        self._core._changed(ControlChanged("reported", control))
 
     def accept_control(self, name: str | ControlBinding, value: ControlValue, *, now: float | None = None) -> None:
         """Record provider acceptance, independently of the reported physical state."""
@@ -195,14 +197,14 @@ class Source:
             value=_validated_value(control, value),
             timestamp=time.monotonic() if now is None else now,
         )
-        self._core._changed(CoreChange(ChangeKind.CONTROL_ACCEPTED, source=self, control=control))
+        self._core._changed(ControlChanged("accepted", control))
 
     def close(self) -> None:
         """Disable this source's routing while retaining declarations and last state."""
         if not self._core._is_current(self):
             return
         self._retire()
-        self._core._changed(CoreChange(ChangeKind.SOURCE_CLOSED, source=self))
+        self._core._changed(SourceChanged("closed", self))
 
     def _retire(self) -> None:
         self._connected = False
@@ -276,7 +278,7 @@ class Core:
             ]
             if others:
                 logger.warning("Control %r on %s:%s is also declared by %s.", control.name, provider, key, ", ".join(others))
-        self._changed(CoreChange(ChangeKind.SOURCE_REGISTERED, source=source))
+        self._changed(SourceChanged("registered", source))
         return source
 
     def source(self, provider: str, key: str) -> Source | None:
@@ -327,13 +329,13 @@ class Core:
         if not math.isfinite(offset):
             raise ValueError("Tare offset must be finite.")
         self._tares[sensor_name] = offset
-        self._changed(CoreChange(ChangeKind.TARE_UPDATED, sensor_name=sensor_name, offset=offset))
+        self._changed(TareChanged(sensor_name, offset))
 
     def clear_tare(self, sensor_name: str) -> bool:
         """Remove an offset; return False if the sensor was not tared."""
         if self._tares.pop(sensor_name, None) is None:
             return False
-        self._changed(CoreChange(ChangeKind.TARE_CLEARED, sensor_name=sensor_name))
+        self._changed(TareChanged(sensor_name, None))
         return True
 
     def capture_tare_offset(

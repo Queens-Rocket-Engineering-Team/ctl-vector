@@ -27,17 +27,6 @@ class ControlStatus(StrEnum):
     ERROR = "error"
 
 
-class ChangeKind(StrEnum):
-    """What a ``CoreChange`` notifies; consumers map these to their own event types."""
-
-    SOURCE_REGISTERED = "source.registered"
-    SOURCE_CLOSED = "source.closed"
-    CONTROL_ACCEPTED = "control.accepted"
-    CONTROL_REPORTED = "control.reported"
-    TARE_UPDATED = "tare.updated"
-    TARE_CLEARED = "tare.cleared"
-
-
 @dataclass(frozen=True, slots=True)
 class SensorDefinition:
     """A measurement in physical units; providers convert wire values before publishing."""
@@ -137,14 +126,31 @@ class DispatchResult:
 
 
 @dataclass(frozen=True, slots=True)
-class CoreChange:
-    """Synchronous state notification; consumers translate it into their own events."""
+class SourceChanged:
+    """A source was registered, or a registration was closed."""
 
-    kind: ChangeKind
-    source: Source | None = None
-    control: ControlBinding | None = None
-    sensor_name: str | None = None
-    offset: float | None = None
+    kind: Literal["registered", "closed"]
+    source: Source
+
+
+@dataclass(frozen=True, slots=True)
+class ControlChanged:
+    """A provider accepted a command or reported feedback; read the state from ``control``."""
+
+    kind: Literal["accepted", "reported"]
+    control: ControlBinding
+
+
+@dataclass(frozen=True, slots=True)
+class TareChanged:
+    """A shared tare offset was set, or cleared when ``offset`` is None."""
+
+    sensor_name: str
+    offset: float | None
+
+
+# A synchronous state notification; consumers translate it into their own events.
+CoreChange = SourceChanged | ControlChanged | TareChanged
 
 
 @dataclass(frozen=True, slots=True)

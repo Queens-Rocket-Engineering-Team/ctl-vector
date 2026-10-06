@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from vector.core import ChangeKind, ControlStatus
+from vector.core import ControlChanged, ControlStatus, SourceChanged, TareChanged
 
 
 if TYPE_CHECKING:
@@ -256,42 +256,34 @@ class SystemState:
         return {"state": state, "consecutive_misses": misses}
 
     def _on_core_change(self, change: CoreChange) -> None:
-        source = change.source
-        kind = change.kind
-        if kind in (ChangeKind.TARE_UPDATED, ChangeKind.TARE_CLEARED):
-            payload: dict[str, object] = {"sensor_name": change.sensor_name}
-            if kind is ChangeKind.TARE_UPDATED:
-                payload["offset"] = change.offset
-            event = self.make_event(kind.value, **payload)
-        elif source is None:
-            return
-        elif source.provider == "kasa":
-            event_type = {
-                ChangeKind.SOURCE_REGISTERED: "kasa.registered",
-                ChangeKind.SOURCE_CLOSED: "kasa.disconnected",
-                ChangeKind.CONTROL_REPORTED: "kasa.updated",
-            }.get(kind)
-            if event_type is None:
+        match change:
+            case TareChanged(sensor_name, None):
+                event = self.make_event("tare.cleared", sensor_name=sensor_name)
+            case TareChanged(sensor_name, offset):
+                event = self.make_event("tare.updated", sensor_name=sensor_name, offset=offset)
+            case SourceChanged(kind, source) if source.provider == "kasa":
+                event_type = "kasa.registered" if kind == "registered" else "kasa.disconnected"
+                event = self.make_event(event_type, kasa=self._snapshot_kasa(source))
+            case ControlChanged("reported", control) if control.source.provider == "kasa":
+                event = self.make_event("kasa.updated", kasa=self._snapshot_kasa(control.source))
+            case ControlChanged(_, control) if control.source.provider == "kasa":
                 return
-            event = self.make_event(event_type, kasa=self._snapshot_kasa(source))
-        elif kind is ChangeKind.SOURCE_REGISTERED:
-            event = self.make_event("device.registered", device=self._snapshot_device(source))
-        elif kind is ChangeKind.SOURCE_CLOSED:
-            event = self.make_event(
-                "device.disconnected",
-                device_name=source.name,
-                device_address=source.address,
-                **source_identity(source),
-            )
-        elif change.control is not None:
-            control = change.control
-            if kind is ChangeKind.CONTROL_ACCEPTED:
-                event_type = "control.accepted"
-            else:
-                event_type = "control.error" if control.reported and control.reported.status is ControlStatus.ERROR else "control.updated"
-            event = self.make_event(event_type, device_name=source.name, control=self._snapshot_control(control), **source_identity(source))
-        else:
-            return
+            case SourceChanged("registered", source):
+                event = self.make_event("device.registered", device=self._snapshot_device(source))
+            case SourceChanged("closed", source):
+                event = self.make_event(
+                    "device.disconnected",
+                    device_name=source.name,
+                    device_address=source.address,
+                    **source_identity(source),
+                )
+            case ControlChanged(kind, control):
+                if kind == "accepted":
+                    event_type = "control.accepted"
+                else:
+                    event_type = "control.error" if control.reported and control.reported.status is ControlStatus.ERROR else "control.updated"
+                source = control.source
+                event = self.make_event(event_type, device_name=source.name, control=self._snapshot_control(control), **source_identity(source))
         if self._publisher:
             self._publisher(event)
 
