@@ -164,19 +164,6 @@ class QLCPStateAdapter:
         if control is not None:
             control.source.report_control(control, to_core_value(state), status=ControlStatus[status.name], now=now)
 
-    def record_accepted_control_state(
-        self,
-        device: ESPDeviceSession,
-        control_id: int,
-        state: ControlState | ControlValue,
-        *,
-        now: float | None = None,
-    ) -> None:
-        control = self._control_for(device, control_id)
-        value = to_core_value(state)
-        if control is not None and value is not None:
-            control.source.accept_control(control, value, now=now)
-
     def _control_for(self, device: ESPDeviceSession, control_id: int) -> ControlBinding | None:
         # QLCP control IDs are the declaration ordinals preserved at registration.
         source = device.core_source

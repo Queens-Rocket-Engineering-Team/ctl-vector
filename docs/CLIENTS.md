@@ -60,7 +60,7 @@ There are several distinct observations along a command's path:
 
 The `settled` field is derived from the absence of an outstanding CONTROL and a reported status other than `pending`. It can therefore be true for an error or an unknown state; it is not independent proof that the requested physical state was achieved. Read the reported status too.
 
-The state model also exposes `accepted_state` and `control.accepted` for an explicit CONTROL ACK path. QLCP v3.1's normal CONTROL response is STATUS, so clients should not require a separate accepted event before handling reported state. See [Control Nodes](NODES.md) for matching and timeouts.
+Control state comes only from the node's report. A QLCP ACK of a CONTROL packet completes the command but records no control state, because it says the packet arrived, not where the actuator is. Clients must not display a requested value as the control's state. See [Control Nodes](NODES.md) for matching and timeouts.
 
 ## Client capabilities and assumptions
 

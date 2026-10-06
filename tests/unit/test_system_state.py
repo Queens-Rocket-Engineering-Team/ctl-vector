@@ -173,12 +173,11 @@ def test_duplicate_source_labels_retain_identity_in_control_and_disconnect_event
     events.clear()
 
     for source in sources:
-        source.accept_control("VALVE", True)
         source.report_control("VALVE", True)
         source.report_control("VALVE", None, status=ControlStatus.ERROR)
         source.close()
-        assert [event["type"] for event in events[-4:]] == ["control.accepted", "control.updated", "control.error", "device.disconnected"]
-        for event in events[-4:]:
+        assert [event["type"] for event in events[-3:]] == ["control.updated", "control.error", "device.disconnected"]
+        for event in events[-3:]:
             assert event["device_name"] == "Shared label"
             assert event["source_provider"] == source.provider
             assert event["source_key"] == source.key
@@ -193,7 +192,6 @@ def test_replaced_source_cannot_emit_control_or_disconnect_events_for_new_genera
     version = state.state_version
     events.clear()
 
-    old.accept_control("VALVE", True)
     old.report_control("VALVE", True)
     old.close()
     assert events == []

@@ -368,7 +368,7 @@ def test_runtime_removal_marks_device_disconnected() -> None:
     assert stream.events[-1]["type"] == "device.disconnected"
 
 
-def test_runtime_ack_routes_through_tracker_and_records_accepted_control_state() -> None:
+def test_control_ack_completes_the_command_without_recording_control_state() -> None:
     runtime, tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
@@ -398,10 +398,11 @@ def test_runtime_ack_routes_through_tracker_and_records_accepted_control_state()
     )
 
     assert command.state == CommandLifecycle.ACKED
+    # Only STATUS reports control state; an ACK says the packet arrived, not where the valve is.
     control = state.snapshot()["devices"][0]["controls"][0]
-    assert control["accepted_state"] == "OPEN"
     assert control["reported_state"] is None
-    assert [event["type"] for event in stream.events[-2:]] == ["command.acked", "control.accepted"]
+    assert "accepted_state" not in control
+    assert stream.events[-1]["type"] == "command.acked"
 
 
 def test_runtime_nack_routes_through_tracker_without_control_update() -> None:
@@ -866,13 +867,8 @@ def test_core_dispatches_each_control_to_its_wire_id() -> None:
         assert len(set(command_ids)) == 2
 
         runtime.handle_ack(device, AckPacket.create(cast("ControlPacket", packets[0])))
-        assert targets[0].accepted is not None
-        assert targets[0].accepted.value is True
-        assert targets[1].accepted is None
         assert [command.control_id for command in tracker.pending] == [1]
         runtime.handle_ack(device, AckPacket.create(cast("ControlPacket", packets[1])))
-        assert targets[1].accepted is not None
-        assert targets[1].accepted.value is True
         assert tracker.pending == ()
 
     asyncio.run(run())

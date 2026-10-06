@@ -26,7 +26,7 @@ Import public types from `vector.core`. The implementation is split into [models
 |---|---|---|
 | Provider | `core.register_source(provider, key, sensors=..., controls=..., control_handler=...)` | A `Source` handle for this registration. |
 | Provider | `source.publish_samples(samples, timestamp_s=...)` | Submits raw physical-unit values as `(sensor_name, value)` or `(sensor_binding, value)` pairs. |
-| Provider | `source.report_control(...)`, `source.accept_control(...)` | Updates observed hardware state or accepted requests separately. |
+| Provider | `source.report_control(...)` | Records the device's reported control state, read back as `control.reported`. |
 | Provider | `source.close()` | Disables its publishing and commands while retaining descriptions and last-known state. |
 | Consumer | `core.source()`, `sources()`, `sensors()`, then `source.controls` | Reads the catalog, including source identity and availability. |
 | Consumer | `core.subscribe_samples(callback)`, `subscribe_changes(callback)` | Receives synchronous updates for the core's lifetime. |
@@ -38,7 +38,7 @@ A `CoreChange` is one of three types, so each carries only the fields that apply
 | Type | Fields | Meaning |
 | --- | --- | --- |
 | `SourceChanged` | `kind` (`"registered"` or `"closed"`), `source` | A registration began or ended. |
-| `ControlChanged` | `kind` (`"accepted"` or `"reported"`), `control` | Read the new state from `control.accepted` or `control.reported`; the source is `control.source`. |
+| `ControlChanged` | `control` | A provider reported feedback. Read the new state from `control.reported`; the source is `control.source`. |
 | `TareChanged` | `sensor_name`, `offset` | A shared offset was set, or cleared when `offset` is `None`. |
 
 Consumers branch with `match change:`. `SystemState` translates these into the existing client event types.
@@ -101,7 +101,7 @@ ESTOP does not pass through the gate. The QLCP runtime sends it directly, so a g
 1. The API or CLI resolves its target and converts operator input into a typed value. `/v1/control` names one source and control and passes its JSON value to the gate unchanged. The older QLCP REST form targets matching node controls by name; the Kasa form targets a selected plug.
 2. `core.set_control()` validates the selected binding and value before invoking the provider. It calls the registered async `handler(binding, value)` with that exact binding and returns the handler's command ID: the QLCP tracker ID, or `None` for providers without one. A handler refuses a value it cannot encode, such as an out-of-range setpoint, by raising `ControlValidationError`; any other exception means the send failed. `set_control` therefore raises `ControlValidationError` when the target or value is invalid and `ControlDispatchError` when the source is unavailable or the provider failed, with the provider's exception as its `__cause__`. In both cases nothing was submitted. If the source closes while the handler awaits I/O, the handler's result still stands: a command that was sent is reported as sent.
 3. The QLCP handler maps the binding's declaration ordinal to its wire control ID, then builds and sends CONTROL through the existing command tracker. An integer the wire type cannot carry is refused with a failed result before anything is tracked or sent, and the connection is untouched. The Kasa handler writes power and refreshes the device to read it back.
-4. Hardware feedback enters through `source.report_control()`. QLCP response correlation stays in its adapter and tracker; accepted requests and reported `confirmed`, `pending`, or `error` states remain distinct from successful transmission. A reported value never raises: one that does not fit the control's declared type is logged and recorded with `error` status, keeping the last known value, so the operator sees the fault and the provider's connection stays up.
+4. Hardware feedback enters through `source.report_control()`. QLCP response correlation stays in its adapter and tracker; reported `confirmed`, `pending`, or `error` states remain distinct from successful transmission. There is no separate accepted state: a requested value is never recorded as the control's state. A reported value never raises: one that does not fit the control's declared type is logged and recorded with `error` status, keeping the last known value, so the operator sees the fault and the provider's connection stays up.
 5. `SystemState` translates core changes into the existing GUI snapshots and events. It reads command history from the existing QLCP tracker rather than maintaining a second history.
 
 A service requesting an actuation can use `core.source(provider, key)`, then `source.control(name)` to select a target. Both lookups can return `None`. Pass the binding to `await core.set_control(target, value)` and catch `ControlValidationError` and `ControlDispatchError`; a return without an exception means the command was submitted. Queries include disconnected sources; dispatch reports these as unavailable.

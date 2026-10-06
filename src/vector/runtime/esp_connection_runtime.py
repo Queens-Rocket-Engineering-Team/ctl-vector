@@ -579,12 +579,6 @@ class ESPConnectionRuntime:
             if command is not None:
                 self._emit(self.state_adapter.record_command_acked(command))
             logger.debug("%s HEARTBEAT ACK seq=%d", session.name, packet.ack_sequence)
-        elif packet.ack_packet_type == PacketType.CONTROL:
-            if command is not None:
-                self._emit(self.state_adapter.record_command_acked(command))
-                self._update_control_from_ack(session, command)
-            else:
-                logger.debug("%s ACK for CONTROL seq=%d", session.name, packet.ack_sequence)
         else:
             if command is not None:
                 self._emit(self.state_adapter.record_command_acked(command))
@@ -772,22 +766,6 @@ class ESPConnectionRuntime:
         logger.error("%s unresponsive: missed %s HEARTBEAT ACKs", session.name, session.missed_heartbeat_count)
         self.remove_device(session)
         return True
-
-    def _update_control_from_ack(self, session: ESPDeviceSession, command: CommandRecord) -> None:
-        """Update the system state with the control state change from a CONTROL ACK packet, if the command has a valid control ID and requested state. If either is None, log a debug message and return without updating the state."""
-        if command.control_id is None or command.requested_state is None:
-            logger.debug("%s ACK for CONTROL seq=%s", session.name, command.packet_sequence)
-            return
-
-        control_name = command.control_name or session.control_name_for_id(command.control_id)
-        if control_name is None:
-            return
-
-        self.state_adapter.record_accepted_control_state(
-            session,
-            command.control_id,
-            command.requested_state,
-        )
 
     def _publish_failed_command_events(self, commands: list[CommandRecord]) -> None:
         """Publish state events for commands that have failed due to connection closure or timeout."""

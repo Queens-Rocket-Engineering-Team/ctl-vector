@@ -71,7 +71,6 @@ def test_wrapper_dispatches_core_and_waits_for_observation(monkeypatch: pytest.M
         power = source.control("power")
         assert power is not None
         assert power.default is None
-        assert power.accepted is None
         dispatcher = AsyncMock(wraps=core.set_control)
         monkeypatch.setattr(core, "set_control", dispatcher)
         device.refresh_started = asyncio.Event()
@@ -89,7 +88,6 @@ def test_wrapper_dispatches_core_and_waits_for_observation(monkeypatch: pytest.M
         dispatcher.assert_awaited_once_with(power, True)
         assert power.reported is not None
         assert power.reported.value is True
-        assert power.accepted is None
         assert [event["type"] for event in events] == ["kasa.registered", "kasa.updated"]
         assert state.snapshot()["devices"] == []
         assert state.recording_schema().controls == ()

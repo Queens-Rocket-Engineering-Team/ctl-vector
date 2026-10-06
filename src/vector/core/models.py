@@ -49,7 +49,7 @@ class ControlDefinition:
 
 @dataclass(frozen=True, slots=True)
 class ControlObservation:
-    """An accepted request or a device observation; dispatch alone creates neither."""
+    """A device's report of a control's state; dispatch alone does not create one."""
 
     value: ControlValue | None
     timestamp: float
@@ -106,10 +106,6 @@ class ControlBinding:
         return self.definition.default
 
     @property
-    def accepted(self) -> ControlObservation | None:
-        return self.source._accepted.get(self.id)  # noqa: SLF001
-
-    @property
     def reported(self) -> ControlObservation | None:
         return self.source._reported.get(self.id)  # noqa: SLF001
 
@@ -124,9 +120,8 @@ class SourceChanged:
 
 @dataclass(frozen=True, slots=True)
 class ControlChanged:
-    """A provider accepted a command or reported feedback; read the state from ``control``."""
+    """A provider reported feedback; read the new state from ``control.reported``."""
 
-    kind: Literal["accepted", "reported"]
     control: ControlBinding
 
 

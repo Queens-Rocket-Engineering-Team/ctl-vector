@@ -252,13 +252,10 @@ def test_replacing_a_source_rejects_old_samples_reports_and_disconnects() -> Non
 
     assert old.publish_samples([("PT101", 100.0)], 100.0) is None
     old.report_control("AV101", False)
-    old.accept_control("AV101", False)
     old.close()
     assert new.connected
     assert old.controls[0].reported.value is True
-    assert old.controls[0].accepted is None
     assert new.controls[0].reported is None
-    assert new.controls[0].accepted is None
     with pytest.raises(TareCaptureError):
         core.capture_tare_offset("PT101")
 
@@ -267,24 +264,20 @@ def test_replacing_a_source_rejects_old_samples_reports_and_disconnects() -> Non
     assert batch.readings[0].value == 2.0
 
 
-def test_accepted_and_reported_state_are_separate_and_errors_retain_last_value() -> None:
+def test_reported_errors_retain_the_last_value() -> None:
     core = Core()
     changes = []
     core.subscribe_changes(changes.append)
     source = core.register_source("test", "source", controls=[ControlDefinition("AV101")])
-    source.accept_control("av101", True, now=10.0)
-    source.report_control("AV101", False, status=ControlStatus.PENDING, now=11.0)
+    source.report_control("av101", False, status=ControlStatus.PENDING, now=11.0)
     control = source.controls[0]
-    assert control.accepted == ControlObservation(True, 10.0)
     assert control.reported == ControlObservation(False, 11.0, ControlStatus.PENDING)
     source.report_control("AV101", None, status="error", now=12.0)
     assert control.reported == ControlObservation(False, 12.0, ControlStatus.ERROR)
-    assert control.accepted == ControlObservation(True, 10.0)
     assert changes == [
         SourceChanged("registered", source),
-        ControlChanged("accepted", control),
-        ControlChanged("reported", control),
-        ControlChanged("reported", control),
+        ControlChanged(control),
+        ControlChanged(control),
     ]
 
 
@@ -391,7 +384,6 @@ def test_dispatch_reports_handler_failure_and_does_not_infer_acceptance() -> Non
     assert raised.value.__cause__ is failure
     assert asyncio.run(core.set_control(source.controls[1], True)) == 42
     assert writes == [("failed", True), ("good", True)]
-    assert source.controls[1].accepted is None
     assert source.controls[1].reported is None
 
 
@@ -420,7 +412,6 @@ def test_a_delayed_command_completion_cannot_change_a_replacement() -> None:
         async def handler(target: ControlBinding, value: ControlValue) -> int:
             started.set()
             await finish.wait()
-            old.accept_control(target, value)
             old.report_control(target, value)
             return 42
 
@@ -431,7 +422,6 @@ def test_a_delayed_command_completion_cannot_change_a_replacement() -> None:
         finish.set()
         # The handler did send; the result must say so even though its source was replaced.
         assert await task == 42
-        assert new.controls[0].accepted is None
         assert new.controls[0].reported is None
 
     asyncio.run(scenario())

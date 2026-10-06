@@ -113,7 +113,6 @@ class Source:
         self.controls = tuple(ControlBinding(self, definition, i) for i, definition in enumerate(controls))
         self._sensors = {sensor.name: sensor for sensor in self.sensors}
         self._controls = {control.name.upper(): control for control in self.controls}
-        self._accepted: dict[int, ControlObservation] = {}
         # Recent raw samples by sensor name, for tare capture while this source is current.
         self._history: dict[str, _SampleBuffer] = {}
         self._reported = {
@@ -196,18 +195,7 @@ class Source:
             timestamp=time.monotonic() if now is None else now,
             status=status,
         )
-        self._core._changed(ControlChanged("reported", control))
-
-    def accept_control(self, name: str | ControlBinding, value: ControlValue, *, now: float | None = None) -> None:
-        """Record provider acceptance, independently of the reported physical state."""
-        control = self._resolve_control(name)
-        if control is None or not self._core._is_current(self):
-            return
-        self._accepted[control.id] = ControlObservation(
-            value=_validated_value(control, value),
-            timestamp=time.monotonic() if now is None else now,
-        )
-        self._core._changed(ControlChanged("accepted", control))
+        self._core._changed(ControlChanged(control))
 
     def close(self) -> None:
         """Disable this source's routing while retaining declarations and last state."""
@@ -308,8 +296,7 @@ class Core:
         value the provider refuses; nothing was sent. Raises ControlDispatchError
         when the source is unavailable or the provider failed to send. A command
         that was sent is reported as sent even if its source closes while the
-        handler awaits I/O. Providers report acceptance and physical feedback
-        separately.
+        handler awaits I/O. Providers report physical feedback separately.
         """
         source = target.source
         if source._core is not self or source._resolve_control(target) is not target:

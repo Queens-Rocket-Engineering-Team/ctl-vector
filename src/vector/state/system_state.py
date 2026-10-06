@@ -219,7 +219,6 @@ class SystemState:
 
     def _snapshot_control(self, control: ControlBinding) -> dict[str, Any]:
         reported = control.reported
-        accepted = control.accepted
         pending_id = (
             self._command_view.pending_command_id(control.source.connection_key, control.id)
             if self._command_view
@@ -236,8 +235,6 @@ class SystemState:
             "reported_state": control_state_name(reported.value) if reported else None,
             "reported_status": reported_status,
             "reported_timestamp": reported.timestamp if reported else None,
-            "accepted_state": control_state_name(accepted.value) if accepted else None,
-            "accepted_timestamp": accepted.timestamp if accepted else None,
             "pending_command_id": pending_id,
             "settled": pending_id is None and reported_status is not ControlStatus.PENDING,
         }
@@ -264,10 +261,8 @@ class SystemState:
             case SourceChanged(kind, source) if source.provider == "kasa":
                 event_type = "kasa.registered" if kind == "registered" else "kasa.disconnected"
                 event = self.make_event(event_type, kasa=self._snapshot_kasa(source))
-            case ControlChanged("reported", control) if control.source.provider == "kasa":
+            case ControlChanged(control) if control.source.provider == "kasa":
                 event = self.make_event("kasa.updated", kasa=self._snapshot_kasa(control.source))
-            case ControlChanged(_, control) if control.source.provider == "kasa":
-                return
             case SourceChanged("registered", source):
                 event = self.make_event("device.registered", device=self._snapshot_device(source))
             case SourceChanged("closed", source):
@@ -277,11 +272,8 @@ class SystemState:
                     device_address=source.address,
                     **source_identity(source),
                 )
-            case ControlChanged(kind, control):
-                if kind == "accepted":
-                    event_type = "control.accepted"
-                else:
-                    event_type = "control.error" if control.reported and control.reported.status is ControlStatus.ERROR else "control.updated"
+            case ControlChanged(control):
+                event_type = "control.error" if control.reported and control.reported.status is ControlStatus.ERROR else "control.updated"
                 source = control.source
                 event = self.make_event(event_type, device_name=source.name, control=self._snapshot_control(control), **source_identity(source))
         if self._publisher:
