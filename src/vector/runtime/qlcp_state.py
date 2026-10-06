@@ -6,6 +6,7 @@ for live transport health; SystemState receives scalar views.
 """
 
 from __future__ import annotations
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, overload
 
 from vector.core import ControlDefinition, ControlStatus, ControlType, SensorDefinition
@@ -54,6 +55,18 @@ def to_qlcp_state(control_type: ControlType, value: ControlValue) -> ControlStat
         message = f"{value!r} does not fit {control_type.name}."
         raise ValueError(message)
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class StreamSetting:
+    """The stand-wide DATA rate VECTOR applies to every node, including ones that connect later.
+
+    Declared state rather than a one-off command: a node that reconnects is
+    silent until told to stream, so the server, not a client, must remember the rate.
+    """
+
+    enabled: bool = False
+    frequency_hz: int = 30
 
 
 class CommandProjection:
@@ -122,8 +135,9 @@ class QLCPStateAdapter:
         self.core = state.core
         self.state = state
         self.commands = CommandProjection(tracker)
+        self.stream = StreamSetting()
         self._sessions: dict[str, ESPDeviceSession] = {}
-        state.set_transport_views(commands=self.commands, health=self._health)
+        state.set_transport_views(commands=self.commands, health=self._health, stream=lambda: self.stream)
 
     def register_device(self, device: ESPDeviceSession, *, control_handler: ControlHandler | None = None) -> None:
         # CONFIG IDs are declaration ordinals (DeviceConfig rejects anything else).
@@ -179,6 +193,11 @@ class QLCPStateAdapter:
         if source.provider != "qlcp" or device is None or device.connection_key != source.connection_key:
             return None
         return TransportHealth(device.last_sync_time, device.missed_heartbeat_count)
+
+    def record_stream(self, setting: StreamSetting) -> None:
+        """Hold the new stand-wide stream setting and publish it."""
+        self.stream = setting
+        self.state.publish_event("stream.updated", stream=asdict(setting))
 
     def record_command(self, command: CommandRecord) -> None:
         """Publish a tracker transition; the event type follows the record's lifecycle state."""

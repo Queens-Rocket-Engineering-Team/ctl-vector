@@ -20,6 +20,7 @@ from vector.core import Core, TelemetryBatch
 from vector.qlcp.enums import ControlState, PacketType
 from vector.runtime.command_tracker import CommandLifecycle, CommandTracker
 from vector.runtime.esp_connection_runtime import ESPConnectionRuntime, ESPDeviceSession
+from vector.runtime.qlcp_state import StreamSetting
 from vector.runtime.telemetry_ingest import TelemetryRuntime
 from vector.state.system_state import SystemState
 
@@ -275,6 +276,23 @@ def test_telemetry_stream_readings_match_config() -> None:
             await runtime.stop_streaming(session)
             await asyncio.wait_for(dev.stream_stopped.wait(), timeout=2.0)
             assert not dev.streaming
+
+    asyncio.run(run())
+
+
+def test_stream_setting_reaches_a_node_that_connects_later() -> None:
+    """A node set to stream before it connects starts streaming on registration, unprompted by any client."""
+
+    async def run() -> None:
+        async with _runtime_harness() as (runtime, _tracker, _state, publisher, _telemetry_runtime, tcp_port, udp_port):
+            await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=20))
+
+            async with MockSensorDevice(server_ip="127.0.0.1", server_port=tcp_port, server_udp_port=udp_port) as dev:
+                await asyncio.wait_for(dev.stream_started.wait(), timeout=2.0)
+                assert dev.streaming
+                assert dev.stream_frequency == 20
+                reached = await _wait_for(lambda: len(publisher.batches) >= 1, timeout_s=2.0)
+                assert reached, "Expected telemetry without any client sending STREAM"
 
     asyncio.run(run())
 

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from vector.api.fast_api import app
 from vector.qlcp.config_models import ControlConfig
 from vector.qlcp.enums import ControlState, ControlType
+from vector.runtime.qlcp_state import StreamSetting
 from vector.runtime.services import RuntimeServices
 
 
@@ -50,6 +51,28 @@ def _install_runtime(esp_runtime: MagicMock) -> RuntimeServices:
     rt.esp_runtime = esp_runtime
     app.state.runtime = rt
     return rt
+
+
+# ---------------------------------------------------------------------------
+# /v1/stream
+# ---------------------------------------------------------------------------
+
+
+def test_stream_setting_is_read_and_partially_updated() -> None:
+    esp = _make_fake_esp_runtime()
+    esp.state_adapter.stream = StreamSetting(enabled=False, frequency_hz=30)
+    esp.set_stream = AsyncMock(return_value=["PANDA"])
+    _install_runtime(esp)
+
+    with TestClient(app) as client:
+        before = client.get("/v1/stream")
+        enabled = client.post("/v1/stream", json={"enabled": True})
+        too_fast = client.post("/v1/stream", json={"frequency_hz": 70000})
+
+    assert before.json() == {"enabled": False, "frequency_hz": 30}
+    assert enabled.json() == {"enabled": True, "frequency_hz": 30, "applied_to": ["PANDA"]}
+    esp.set_stream.assert_awaited_once_with(StreamSetting(enabled=True, frequency_hz=30))
+    assert too_fast.status_code == 422
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from vector.core import ControlBinding, ControlDefinition, ControlValue, Core, CoreChange, SensorDefinition, Source
-    from vector.runtime.qlcp_state import CommandProjection
+    from vector.runtime.qlcp_state import CommandProjection, StreamSetting
 
 StateEvent = dict[str, object]
 
@@ -89,6 +89,7 @@ class SystemState:
         self._publisher: Callable[[StateEvent], None] | None = None
         self._command_view: CommandProjection | None = None
         self._health: Callable[[Source], TransportHealth | None] = lambda _source: None
+        self._stream: Callable[[], StreamSetting | None] = lambda: None
         core.subscribe_changes(self._on_core_change)
 
     @property
@@ -103,9 +104,11 @@ class SystemState:
         *,
         commands: CommandProjection,
         health: Callable[[Source], TransportHealth | None],
+        stream: Callable[[], StreamSetting | None],
     ) -> None:
         self._command_view = commands
         self._health = health
+        self._stream = stream
 
     def recording_schema(self) -> RecordingSchema:
         sources = self._ordinary_sources()
@@ -165,6 +168,7 @@ class SystemState:
             "devices": [self._snapshot_device(source) for source in self._ordinary_sources()],
             "kasa": [self._snapshot_kasa(source) for source in self._kasa_sources()],
             "commands": self._command_view.snapshot() if self._command_view else {"pending": [], "recent": []},
+            "stream": asdict(stream) if (stream := self._stream()) is not None else None,
             "tares": self.core.tares(),
             "session": self.session(),
         }

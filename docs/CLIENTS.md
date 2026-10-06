@@ -27,6 +27,8 @@ REST routes validate input and call the appropriate runtime. The main groups are
 
 `POST /v1/control` sets one control on one source through the [shared core](CORE.md), for QLCP nodes and Kasa plugs alike. The JSON body names the source as `<source_provider>:<source_key>`, copied from the state snapshot, the control by name, and a value matching the control's declared type: `true` or `false` for BOOL, an integer for UINT32 and INT32, a finite number for FLOAT32. A value the control cannot take is 400, an unknown target is 404, a disconnected source is 409, and a failed send is 502. The response reports `submitted` and, for QLCP, the tracker `command_id`. The older `/v1/command` CONTROL form, which fans out by name across nodes, and the `/v1/kasa` POST remain for existing clients.
 
+`POST /v1/stream` sets the DATA stream rate for the whole stand as declared state: `{"enabled": true, "frequency_hz": 190}`, either field optional. VECTOR applies it to every connected node immediately and to each node as it registers, so a node that reconnects resumes streaming without client action. The response lists the nodes reached. `GET /v1/stream` reads the setting, the state snapshot carries it as `stream`, and a change publishes `stream.updated`.
+
 The [WebSocket routes](../src/vector/api/routers/streams.py) delegate each connection to a stream runtime:
 
 | Endpoint | Messages | Slow-client behavior |

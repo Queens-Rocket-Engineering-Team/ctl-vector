@@ -22,9 +22,12 @@ from vector.qlcp.packets import (
     PacketHeader,
     StatusPacket,
     StatusRequestPacket,
+    StreamStartPacket,
+    StreamStopPacket,
 )
 from vector.runtime.command_tracker import CommandLifecycle, CommandTracker
 from vector.runtime.esp_connection_runtime import ESPConnectionRuntime, ESPDeviceSession
+from vector.runtime.qlcp_state import StreamSetting
 from vector.state.system_state import SystemState
 
 
@@ -155,6 +158,56 @@ def _make_session(
     session.register_missed_heartbeat = register_missed_heartbeat
     session.close = close
     return cast(ESPDeviceSession, session)
+
+
+def test_stream_setting_is_applied_to_connected_nodes_and_published() -> None:
+    async def run() -> None:
+        runtime, _tracker, state, stream = _make_runtime()
+        first = _make_session(runtime, address="10.0.0.2", name="FIRST")
+        second = _make_session(runtime, address="10.0.0.3", connection_key="conn-b", name="SECOND")
+        for device in (first, second):
+            runtime.devices.register(device)
+            runtime.state_adapter.register_device(device)
+
+        applied = await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=50))
+
+        assert applied == ["FIRST", "SECOND"]
+        for device in (first, second):
+            packet = _sent_packets(device)[-1]
+            assert isinstance(packet, StreamStartPacket)
+            assert packet.frequency_hz == 50
+        updated = [event for event in stream.events if event["type"] == "stream.updated"]
+        assert [event["stream"] for event in updated] == [{"enabled": True, "frequency_hz": 50}]
+        assert state.snapshot()["stream"] == {"enabled": True, "frequency_hz": 50}
+
+        await runtime.set_stream(StreamSetting(enabled=False, frequency_hz=50))
+        assert isinstance(_sent_packets(first)[-1], StreamStopPacket)
+
+    asyncio.run(run())
+
+
+def test_node_registering_while_streaming_is_enabled_receives_stream_start() -> None:
+    async def run() -> None:
+        runtime, tracker, _state, _stream = _make_runtime()
+        runtime.state_adapter.record_stream(StreamSetting(enabled=True, frequency_hz=20))
+        server_sock, peer_sock = socket.socketpair()
+        server_sock.setblocking(False)
+        peer_sock.setblocking(False)
+
+        try:
+            config = _make_config()
+            packet = ConfigPacket(header=PacketHeader(sequence=12, timestamp_us=0), config_json=orjson.dumps(config).decode())
+            session = await runtime.register_configured_device(server_sock, "10.0.0.2", config, packet)
+
+            # The initial STATUS_REQUEST completes on send and is not retained; STREAM_START awaits its ACK.
+            pending = [command.packet_type for command in tracker.pending if command.connection_key == session.connection_key]
+            assert pending == [PacketType.STREAM_START]
+        finally:
+            runtime.close_all()
+            peer_sock.close()
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
 
 
 def test_runtime_registers_valid_device() -> None:

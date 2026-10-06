@@ -32,7 +32,7 @@ from vector.qlcp.packets import (
 )
 from vector.runtime.device_registry import DeviceRegistry
 from vector.runtime.metrics import Metrics
-from vector.runtime.qlcp_state import QLCPStateAdapter, to_core_value, to_qlcp_state
+from vector.runtime.qlcp_state import QLCPStateAdapter, StreamSetting, to_core_value, to_qlcp_state
 
 
 logger = logging.getLogger(__name__)
@@ -294,6 +294,12 @@ class ESPConnectionRuntime:
             status_request = StatusRequestPacket.create()
             await self.send_tracked_command(new_session, status_request)
             logger.debug("Sent initial STATUS_REQUEST to %s", new_session.name)
+
+            # A node starts silent, so apply the stand-wide stream setting here.
+            setting = self.state_adapter.stream
+            if setting.enabled:
+                await self.send_tracked_command(new_session, StreamStartPacket.create(frequency_hz=setting.frequency_hz))
+                logger.info("Sent STREAM_START (%d Hz) to %s", setting.frequency_hz, new_session.name)
         except Exception:
             logger.exception("Post-registration setup failed for %s. Removing device.", new_session.name)
             self.remove_device(new_session)
@@ -414,6 +420,23 @@ class ESPConnectionRuntime:
     # ------------------------------------------------------------------ #
     # Device command operations                                            #
     # ------------------------------------------------------------------ #
+
+    async def set_stream(self, setting: StreamSetting) -> list[str]:
+        """Hold the stand-wide stream setting and apply it to every connected node.
+
+        Returns the names of the nodes the setting reached; a node that cannot be
+        reached is removed, as for any failed send. Nodes that connect later
+        receive the setting at registration.
+        """
+        self.state_adapter.record_stream(setting)
+        return [session.name for session in list(self.devices.values()) if await self._apply_stream(session)]
+
+    async def _apply_stream(self, session: ESPDeviceSession) -> bool:
+        setting = self.state_adapter.stream
+        if setting.enabled:
+            packet = StreamStartPacket.create(frequency_hz=setting.frequency_hz)
+            return await self._send_or_remove(session, packet, f"STREAM_START ({setting.frequency_hz} Hz)")
+        return await self._send_or_remove(session, StreamStopPacket.create(), "STREAM_STOP command")
 
     async def get_single(self, session: ESPDeviceSession) -> bool:
         """Request a single data sample from the device. Returns True if the command was sent."""

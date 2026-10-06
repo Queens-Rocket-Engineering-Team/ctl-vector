@@ -9,6 +9,7 @@ from vector.api.deps import get_runtime
 from vector.api.models import CommandResponse
 from vector.qlcp.config_parser import QLCPConfigError, cast_control_state
 from vector.runtime.esp_connection_runtime import ESPDeviceSession, normalize_control_name
+from vector.runtime.qlcp_state import StreamSetting
 from vector.runtime.services import RuntimeServices
 
 
@@ -39,6 +40,23 @@ CommandRequest = Annotated[
     Union[GetSingleCommand, StopCommand, StreamCommand, ControlCommand],
     Field(discriminator="command"),
 ]
+
+
+class StreamRequest(BaseModel):
+    """A partial update; a field left out keeps its current value."""
+
+    enabled: bool | None = None
+    frequency_hz: int | None = Field(default=None, ge=1, le=65535)
+
+
+class StreamInfo(BaseModel):
+    enabled: bool
+    frequency_hz: int
+
+
+class StreamApplied(StreamInfo):
+    # Nodes the setting reached just now; later arrivals receive it at registration.
+    applied_to: list[str]
 
 
 class AutoDiscoveryConfig(BaseModel):
@@ -116,6 +134,24 @@ async def send_device_command(
         status="sent",
         message=f"Command {cmd.command!r} sent to {', '.join(sent)}.",
     )
+
+
+@router.get("/v1/stream", summary="Get the stand-wide DATA stream setting")
+async def get_stream(rt: Annotated[RuntimeServices, Depends(get_runtime)]) -> StreamInfo:
+    setting = rt.esp_runtime.state_adapter.stream
+    return StreamInfo(enabled=setting.enabled, frequency_hz=setting.frequency_hz)
+
+
+@router.post("/v1/stream", summary="Set the DATA stream rate for every node, now and as nodes connect")
+async def set_stream(body: StreamRequest, rt: Annotated[RuntimeServices, Depends(get_runtime)]) -> StreamApplied:
+    current = rt.esp_runtime.state_adapter.stream
+    setting = StreamSetting(
+        enabled=current.enabled if body.enabled is None else body.enabled,
+        frequency_hz=current.frequency_hz if body.frequency_hz is None else body.frequency_hz,
+    )
+    logger.info("User set stream: enabled=%s, frequency_hz=%s", setting.enabled, setting.frequency_hz)
+    applied_to = await rt.esp_runtime.set_stream(setting)
+    return StreamApplied(enabled=setting.enabled, frequency_hz=setting.frequency_hz, applied_to=applied_to)
 
 
 @router.get("/v1/autodiscovery", summary="Get autodiscovery settings")
