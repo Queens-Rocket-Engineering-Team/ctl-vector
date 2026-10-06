@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 from kasa import Device, Discover, KasaException
 
-from vector.core import ControlBinding, ControlDefinition, ControlObservation, ControlStatus, ControlType, ControlValue, Core, Source
+from vector.core import ControlBinding, ControlDefinition, ControlObservation, ControlStatus, ControlType, ControlValue, Core
 
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 class _KasaEntry(NamedTuple):
     device: Device
-    source: Source
+    # The plug's one control; its source is this discovery's registration.
+    power: ControlBinding
 
 
 class KasaRuntime:
@@ -32,11 +33,9 @@ class KasaRuntime:
     async def get_devices(self) -> list[Device]:
         entries = list(self._registry.values())
         await asyncio.gather(*(entry.device.update() for entry in entries))
-        for dev, source in entries:
-            if source.connected:
-                control = source.control("power")
-                if control is not None and (control.reported is None or control.reported.value != dev.is_on):
-                    source.report_control("power", dev.is_on)
+        for dev, power in entries:
+            if power.source.connected and (power.reported is None or power.reported.value != dev.is_on):
+                power.source.report_control(power, dev.is_on)
         return [entry.device for entry in entries]
 
     async def discover(self) -> None:
@@ -49,12 +48,8 @@ class KasaRuntime:
 
     async def set_state(self, host: str, active: bool) -> Device:
         """Compatibility entry point used by the existing Kasa HTTP endpoint."""
-        dev, source = self._require_device(host)
-        target = source.control("power")
-        if target is None:
-            message = f"Kasa source at {host} declares no power control."
-            raise RuntimeError(message)
-        await self.core.set_control(target, active)
+        dev, power = self._require_device(host)
+        await self.core.set_control(power, active)
         return dev
 
     async def _write_power(self, dev: Device, target: ControlBinding, value: ControlValue) -> None:
@@ -67,7 +62,7 @@ class KasaRuntime:
             else:
                 await dev.turn_off()
             await dev.update()
-            source.report_control("power", dev.is_on)
+            source.report_control(target, dev.is_on)
             logger.info("Set Kasa device at %s: active=%s", dev.host, active)
         except KasaException:
             logger.exception("Kasa error controlling device at %s", dev.host)
@@ -93,7 +88,7 @@ class KasaRuntime:
             control_handler=partial(self._write_power, dev),
             initial_controls={"power": ControlObservation(value=dev.is_on, timestamp=time.monotonic(), status=ControlStatus.CONFIRMED)},
         )
-        self._registry[dev.host] = _KasaEntry(dev, source)
+        self._registry[dev.host] = _KasaEntry(dev, source.controls[0])
 
     def _require_device(self, host: str) -> _KasaEntry:
         entry = self._registry.get(host)
@@ -104,4 +99,4 @@ class KasaRuntime:
     def _remove_device(self, host: str) -> None:
         entry = self._registry.pop(host, None)
         if entry is not None:
-            entry.source.close()
+            entry.power.source.close()
