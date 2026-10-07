@@ -15,7 +15,7 @@ from vector.core import ControlChanged, ControlStatus, SourceChanged, TareChange
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from vector.core import ControlBinding, ControlDefinition, ControlValue, Core, CoreChange, SensorDefinition, Source
+    from vector.core import ControlBinding, ControlValue, Core, CoreChange, SensorDefinition, Source
     from vector.runtime.qlcp_state import CommandProjection, StreamSetting
 
 StateEvent = dict[str, object]
@@ -42,7 +42,8 @@ class RecordingSchema:
     """A momentary view of declarations, including disconnected sources."""
 
     sensors: tuple[SensorDefinition, ...]
-    controls: tuple[ControlDefinition, ...]
+    # Bindings rather than definitions: a column is named for its source as well as its control.
+    controls: tuple[ControlBinding, ...]
     kasa: tuple[KasaState, ...]
 
 
@@ -114,16 +115,17 @@ class SystemState:
         sources = self._ordinary_sources()
         return RecordingSchema(
             sensors=tuple(sensor.definition for source in sources for sensor in source.sensors),
-            controls=tuple(control.definition for source in sources for control in source.controls),
+            controls=tuple(control for source in sources for control in source.controls),
             kasa=tuple(self._kasa_state(source) for source in self._kasa_sources()),
         )
 
-    def control_states(self) -> dict[str, str | None]:
-        states: dict[str, str | None] = {}
+    def control_states(self) -> dict[tuple[str, str, str], str | None]:
+        """Latest reported state of every control, keyed by (provider, key, control name)."""
+        states: dict[tuple[str, str, str], str | None] = {}
         for source in self._ordinary_sources():
             for control in source.controls:
                 reported = control.reported
-                states[control.name] = control_state_name(reported.value) if reported else None
+                states[source.provider, source.key, control.name] = control_state_name(reported.value) if reported else None
         return states
 
     def kasa_active(self) -> dict[str, bool]:

@@ -92,7 +92,7 @@ Telemetry uses server-monotonic seconds; video filenames use MediaMTX's wall clo
 
 CSV sensor values are tared and rounded to four decimal places. An empty sensor cell means that sensor was absent from the batch. Unlike the raw WebSocket, CSV does not include each reading's tare, so a mid-session tare change cannot be reconstructed from start/end offsets alone.
 
-Control columns use the declared group and name. The writer encodes a boolean in group `relay` as `1` for `CLOSED`, the energized state of a normally-closed relay; every other boolean group, such as `solenoid` or a plug's `power`, uses `1` for `OPEN`/true. Numeric controls retain their reported value. This is a CSV convention tied to the `relay` group name. The layout follows the earlier GUI recorder for analysis compatibility, with numeric controls added explicitly.
+Control columns are named `<source>_<group>_<name>`, where the source is the producer's display label sanitized to letters, digits and underscores, with a numeric suffix if two sources share a label. The writer encodes a boolean in group `relay` as `1` for `CLOSED`, the energized state of a normally-closed relay; every other boolean group, such as `solenoid` or a plug's `power`, uses `1` for `OPEN`/true. Numeric controls retain their reported value. This is a CSV convention tied to the `relay` group name. The layout follows the earlier GUI recorder for analysis compatibility, with numeric controls added explicitly.
 
 ## Audio and older integrations
 

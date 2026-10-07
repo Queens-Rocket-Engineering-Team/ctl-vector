@@ -2,9 +2,10 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
-from vector.core import ControlDefinition, ControlType, SensorDefinition, TelemetryBatch, TelemetryReading
+from vector.core import ControlBinding, ControlDefinition, ControlType, SensorDefinition, TelemetryBatch, TelemetryReading
 from vector.runtime.session_telemetry import (
     SessionTelemetryWriter,
     TelemetrySessionPublisher,
@@ -16,7 +17,7 @@ from vector.runtime.session_telemetry import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
+    from vector.core import Source
 
 
 @dataclass
@@ -29,14 +30,26 @@ class _Kasa:
 @dataclass
 class _Schema:
     sensors: tuple[SensorDefinition, ...] = ()
-    controls: tuple[ControlDefinition, ...] = ()
+    controls: tuple[ControlBinding, ...] = ()
     kasa: tuple[_Kasa, ...] = ()
 
 
-class _FakeState:
-    """Stands in for SystemState, exposing only what the writer reads."""
+_SOURCE = ("test", "MockDevice", "MockDevice")  # provider, key, label
 
-    def __init__(self, schema: _Schema, controls: dict[str, str | None] | None = None, kasa: dict[str, bool] | None = None) -> None:
+
+class _FakeState:
+    """Stands in for SystemState, exposing only what the writer reads.
+
+    ``controls`` is keyed by control name; every control is on ``_SOURCE`` unless a
+    test keys by the full ``(provider, key, name)`` itself.
+    """
+
+    def __init__(
+        self,
+        schema: _Schema,
+        controls: dict[str | tuple[str, str, str], str | None] | None = None,
+        kasa: dict[str, bool] | None = None,
+    ) -> None:
         self.schema = schema
         self._controls = controls or {}
         self._kasa = kasa or {}
@@ -44,8 +57,8 @@ class _FakeState:
     def recording_schema(self) -> _Schema:
         return self.schema
 
-    def control_states(self) -> dict[str, str | None]:
-        return self._controls
+    def control_states(self) -> dict[tuple[str, str, str], str | None]:
+        return {(key if isinstance(key, tuple) else (_SOURCE[0], _SOURCE[1], key)): value for key, value in self._controls.items()}
 
     def kasa_active(self) -> dict[str, bool]:
         return self._kasa
@@ -55,8 +68,10 @@ def _sensor(name: str, unit: str = "PSI") -> SensorDefinition:
     return SensorDefinition(name=name, group="pressure_transducer", unit=unit)
 
 
-def _control(name: str, group: str, control_type: ControlType = ControlType.BOOL) -> ControlDefinition:
-    return ControlDefinition(name=name, group=group, type=control_type, default=False if control_type == ControlType.BOOL else 0)
+def _control(name: str, group: str, control_type: ControlType = ControlType.BOOL, *, source: tuple[str, str, str] = _SOURCE) -> ControlBinding:
+    definition = ControlDefinition(name=name, group=group, type=control_type, default=False if control_type == ControlType.BOOL else 0)
+    provider, key, label = source
+    return ControlBinding(cast("Source", SimpleNamespace(provider=provider, key=key, name=label)), definition, 0)
 
 
 def _batch(
@@ -103,10 +118,11 @@ def test_header_orders_blocks_and_annotates_units() -> None:
     plan = build_columns(schema)  # type: ignore[arg-type]
 
     assert plan.header == (
-        "device_timestamp,source,PT101 [PSI],TC101 [C],heater_HEATER1,relay_SAFE24,valve_AV101,kasa_Pump,source_provider,source_key\n"
+        "device_timestamp,source,PT101 [PSI],TC101 [C],"
+        "MockDevice_heater_HEATER1,MockDevice_relay_SAFE24,MockDevice_valve_AV101,kasa_Pump,source_provider,source_key\n"
     )
     assert plan.column_names == (
-        "device_timestamp", "source", "PT101", "TC101", "heater_HEATER1", "relay_SAFE24", "valve_AV101", "kasa_Pump",
+        "device_timestamp", "source", "PT101", "TC101", "MockDevice_heater_HEATER1", "MockDevice_relay_SAFE24", "MockDevice_valve_AV101", "kasa_Pump",
         "source_provider", "source_key",
     )
 
@@ -132,7 +148,7 @@ def test_sensor_without_a_unit_keeps_a_bare_name() -> None:
 def test_empty_blocks_are_omitted_entirely() -> None:
     plan = build_columns(_Schema(controls=(_control("AV101", "valve"),)))  # type: ignore[arg-type]
 
-    assert plan.header == "device_timestamp,source,valve_AV101,source_provider,source_key\n"
+    assert plan.header == "device_timestamp,source,MockDevice_valve_AV101,source_provider,source_key\n"
 
 
 def test_header_degrades_to_the_prefix_when_nothing_is_known() -> None:
@@ -144,24 +160,26 @@ def test_control_group_becomes_the_column_prefix() -> None:
 
     plan = build_columns(schema)  # type: ignore[arg-type]
 
-    assert [name for name, _, _, _ in plan.controls] == ["heater_HEATER1", "relay_IGNRUN", "valve_AV205"]
+    assert [column.name for column in plan.controls] == ["MockDevice_heater_HEATER1", "MockDevice_relay_IGNRUN", "MockDevice_valve_AV205"]
 
 
-def test_a_control_name_shared_by_two_sources_is_warned_about_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    warnings: list[tuple[object, ...]] = []
-    monkeypatch.setattr("vector.runtime.session_telemetry.logger.warning", lambda _message, *args: warnings.append(args))
-    schema = _Schema(controls=(_control("AV101", "valve"), _control("HTR", "heater"), _control("AV101", "valve")))
+def test_same_control_name_on_two_sources_gets_two_columns(tmp_path: Path) -> None:
+    pad = ("qlcp", "PAD", "Pad")
+    flight = ("wireless", "FLIGHT", "Pad")  # same label, different source: suffixed, never merged
+    schema = _Schema(controls=(_control("AV101", "solenoid", source=pad), _control("AV101", "solenoid", source=flight)))
+    state = _FakeState(schema, controls={("qlcp", "PAD", "AV101"): "OPEN", ("wireless", "FLIGHT", "AV101"): "CLOSED"})
 
-    plan = build_columns(schema)  # type: ignore[arg-type]
+    _write(tmp_path, state, [_batch({})])
 
-    assert [name for name, _, _, _ in plan.controls] == ["heater_HTR", "valve_AV101", "valve_AV101"]
-    assert warnings == [("AV101",)]
+    lines = (tmp_path / "telemetry.csv").read_text().splitlines()
+    assert lines[0] == "device_timestamp,source,Pad_solenoid_AV101,Pad_2_solenoid_AV101,source_provider,source_key"
+    assert lines[1] == "236711.7952,MockDevice,1,0,test,MockDevice"
 
 
 def test_control_group_with_punctuation_is_sanitized() -> None:
     plan = build_columns(_Schema(controls=(_control("X1", "Fill / Vent"),)))  # type: ignore[arg-type]
 
-    assert [name for name, _, _, _ in plan.controls] == ["fill_vent_X1"]
+    assert [column.name for column in plan.controls] == ["MockDevice_fill_vent_X1"]
 
 
 def test_kasa_keys_are_sanitized_and_deduplicated() -> None:
@@ -208,7 +226,7 @@ def test_only_relays_read_one_when_closed(tmp_path: Path) -> None:
 
     lines = (tmp_path / "telemetry.csv").read_text().splitlines()
     # Columns are ordered by group: power, relay, solenoid.
-    assert lines[0] == "device_timestamp,source,power_power,relay_SAFE24,solenoid_AV101,source_provider,source_key"
+    assert lines[0] == "device_timestamp,source,MockDevice_power_power,MockDevice_relay_SAFE24,MockDevice_solenoid_AV101,source_provider,source_key"
     # Same reported state, one opposite bit: relays are wired normally-closed, so
     # CLOSED is their energized state. Everything else reads 1 for OPEN/true.
     assert lines[1] == "236711.7952,MockDevice,1,0,1,test,MockDevice"

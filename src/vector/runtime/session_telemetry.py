@@ -12,13 +12,13 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, TextIO
+from typing import TYPE_CHECKING, NamedTuple, Protocol, TextIO, TypeVar
 
 from vector.core import ControlType
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence, Set
+    from collections.abc import Callable, Hashable, Iterable, Sequence, Set
     from pathlib import Path
 
     from vector.core import TelemetryBatch, TelemetryReading
@@ -48,30 +48,49 @@ SOURCE_COLUMNS = ("source_provider", "source_key")
 
 _NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
 _NON_ALNUM_LOWER = re.compile(r"[^a-z0-9]+")
+_Id = TypeVar("_Id", bound="Hashable")
+
+# A control column and the control whose latest reported state fills it.
+SourceId = tuple[str, str]  # (source_provider, source_key)
+
+
+class ControlColumn(NamedTuple):
+    name: str
+    source: SourceId
+    control: str
+    is_relay: bool
+    is_bool: bool
 
 
 def _slug(text: str) -> str:
     return _NON_ALNUM_LOWER.sub("_", text.strip().lower()).strip("_")
 
 
-def kasa_column_keys(kasa: Sequence[KasaEntry]) -> dict[str, str]:
-    """Map Kasa host -> column key, sanitizing aliases and de-duplicating collisions.
+def _unique_keys(labelled: Iterable[tuple[_Id, str]]) -> dict[_Id, str]:
+    """Map each id to its sanitized label, suffixing repeats in iteration order.
 
-    Two outlets sharing an alias would otherwise collapse into one column, so the
-    second and later get a numeric suffix in iteration order.
+    Labels are display names and may collide; two sources sharing one would
+    otherwise collapse into the same columns. A repeated id keeps its first key.
     """
-    keys: dict[str, str] = {}
+    keys: dict[_Id, str] = {}
     used: set[str] = set()
-    for entry in kasa:
-        base = _NON_ALNUM.sub("_", entry.alias or entry.host)
+    for item, label in labelled:
+        if item in keys:
+            continue
+        base = _NON_ALNUM.sub("_", label)
         key = base
         suffix = 2
         while key in used:
             key = f"{base}_{suffix}"
             suffix += 1
         used.add(key)
-        keys[entry.host] = key
+        keys[item] = key
     return keys
+
+
+def kasa_column_keys(kasa: Sequence[KasaEntry]) -> dict[str, str]:
+    """Map Kasa host -> column key from its alias, or its host when it has none."""
+    return _unique_keys((entry.host, entry.alias or entry.host) for entry in kasa)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,8 +102,7 @@ class ColumnPlan:
     """
 
     sensor_names: tuple[str, ...]
-    # (column name, control name, is_relay, is_bool), in output order.
-    controls: tuple[tuple[str, str, bool, bool], ...]
+    controls: tuple[ControlColumn, ...]
     # (column name, kasa host), in output order.
     kasa: tuple[tuple[str, str], ...]
     header: str
@@ -99,7 +117,7 @@ class ColumnPlan:
     def column_names(self) -> tuple[str, ...]:
         return (
             "device_timestamp", "source", *self.sensor_names,
-            *(name for name, _, _, _ in self.controls), *(name for name, _ in self.kasa),
+            *(column.name for column in self.controls), *(name for name, _ in self.kasa),
             *SOURCE_COLUMNS,
         )
 
@@ -110,31 +128,30 @@ def build_columns(schema: RecordingSchema, *, readings: Sequence[TelemetryReadin
     Sensor and Kasa columns match the client recorder exactly. Control columns do not:
     that recorder had only ``valve_``/``relay_`` buckets and sorted every non-``AV*``
     control into ``relay_``, which filed the analog heater under a boolean column that
-    could only ever read 0. Here the prefix is the control's declared QLCP group and
-    non-boolean controls carry their actual value, so nothing is silently discarded.
-    A current batch can fill gaps in a stale schema snapshot when opening a new file.
+    could only ever read 0. Here a column is ``<source>_<group>_<name>``: the source
+    label keeps same-named controls on two nodes apart, the group is the control's
+    declared QLCP group, and non-boolean controls carry their actual value, so nothing
+    is silently discarded. A current batch can fill gaps in a stale schema snapshot
+    when opening a new file.
     """
     units = {sensor.name: sensor.unit for sensor in schema.sensors}
     for reading in readings:
         units.setdefault(reading.sensor_name, reading.unit)
     sensor_names = tuple(sorted(units))
 
-    controls = tuple(
-        (
-            f"{_slug(control.group)}_{control.name}",
-            control.name,
-            control.group.strip().lower() == RELAY_GROUP,
-            control.type == ControlType.BOOL,
-        )
-        # Group first, then control name, so the layout is one rule end to end.
-        for control in sorted(schema.controls, key=lambda item: (_slug(item.group), item.name))
-    )
-    # The same control name on two sources is two controls, but cells are looked up
-    # by name alone, so both columns would carry whichever source was listed last.
-    names = [control.name for control in schema.controls]
-    shared = sorted({name for name in names if names.count(name) > 1})
-    if shared:
-        logger.warning("Controls declared by more than one source record one source's state: %s", ", ".join(shared))
+    source_keys = _unique_keys(((c.source.provider, c.source.key), c.source.name) for c in schema.controls)
+    controls = []
+    # Source, then group, then control name, so the layout is one rule end to end.
+    for control in sorted(schema.controls, key=lambda c: (source_keys[c.source.provider, c.source.key], _slug(c.group), c.name)):
+        source_id = (control.source.provider, control.source.key)
+        group = _slug(control.group)
+        controls.append(ControlColumn(
+            name=f"{source_keys[source_id]}_{group}_{control.name}" if group else f"{source_keys[source_id]}_{control.name}",
+            source=source_id,
+            control=control.name,
+            is_relay=group == RELAY_GROUP,
+            is_bool=control.type == ControlType.BOOL,
+        ))
 
     kasa_keys = kasa_column_keys(schema.kasa)
     kasa = tuple(sorted(((f"kasa_{key}", host) for host, key in kasa_keys.items()), key=lambda item: item[0]))
@@ -142,7 +159,7 @@ def build_columns(schema: RecordingSchema, *, readings: Sequence[TelemetryReadin
     columns = [
         "device_timestamp", "source",
         *(f"{name} [{units[name]}]" if units[name] else name for name in sensor_names),
-        *(name for name, _, _, _ in controls),
+        *(column.name for column in controls),
         *(name for name, _ in kasa),
         # Append identity so existing sensor/control column positions stay stable.
         *SOURCE_COLUMNS,
@@ -150,7 +167,7 @@ def build_columns(schema: RecordingSchema, *, readings: Sequence[TelemetryReadin
     header = io.StringIO(newline="")
     csv.writer(header, lineterminator="\n").writerow(columns)
 
-    return ColumnPlan(sensor_names=sensor_names, controls=controls, kasa=kasa, header=header.getvalue())
+    return ColumnPlan(sensor_names=sensor_names, controls=tuple(controls), kasa=kasa, header=header.getvalue())
 
 
 def _control_cell(state: str | None, *, is_relay: bool, is_bool: bool) -> str:
@@ -223,8 +240,8 @@ class SessionTelemetryWriter:
         # gap is distinguishable from a real reading of zero.
         cells += [f"{values[name]:.4f}" if name in values else "" for name in self.plan.sensor_names]
         cells += [
-            _control_cell(control_states.get(control_name), is_relay=is_relay, is_bool=is_bool)
-            for _, control_name, is_relay, is_bool in self.plan.controls
+            _control_cell(control_states.get((*column.source, column.control)), is_relay=column.is_relay, is_bool=column.is_bool)
+            for column in self.plan.controls
         ]
         cells += ["1" if kasa_active.get(host) else "0" for _, host in self.plan.kasa]
         cells += [batch.source_provider, batch.source_key]

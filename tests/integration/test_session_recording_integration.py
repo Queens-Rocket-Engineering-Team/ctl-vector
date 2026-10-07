@@ -149,7 +149,7 @@ def test_session_records_telemetry_metadata_and_a_downloadable_archive(tmp_path:
             device.control_handled.clear()
             await state.core.set_control(session.core_source.control("AV101"), False)
             await asyncio.wait_for(device.control_handled.wait(), timeout=3.0)
-            assert await _wait_for(lambda: state.control_states().get("AV101") == "CLOSED")
+            assert await _wait_for(lambda: state.control_states().get(("qlcp", device.device_name, "AV101")) == "CLOSED")
 
             rows_at_flip = session_runtime.read_metadata(session_id)["telemetry"]["rows"]
             assert await _wait_for(lambda: session_runtime.read_metadata(session_id)["telemetry"]["rows"] > rows_at_flip + 5)
@@ -168,11 +168,12 @@ def test_session_records_telemetry_metadata_and_a_downloadable_archive(tmp_path:
         assert all(line.split(",")[-2:] == ["qlcp", device.device_name] for line in lines[1:])
         assert metadata["telemetry"]["columns"][-2:] == ["source_provider", "source_key"]
         assert "PT101 [PSI]" in header
-        assert "heater_HEATER1" in header
-        assert "relay_SAFE24" in header
-        assert "valve_AV101" in header
+        prefix = device.device_name
+        assert f"{prefix}_heater_HEATER1" in header
+        assert f"{prefix}_relay_SAFE24" in header
+        assert f"{prefix}_valve_AV101" in header
 
-        valve_index = header.index("valve_AV101")
+        valve_index = header.index(f"{prefix}_valve_AV101")
         valve_column = [line.split(",")[valve_index] for line in lines[1:]]
         # AV101 defaults to OPEN (1 for a valve) and is commanded CLOSED (0) mid-run.
         assert valve_column[0] == "1"
