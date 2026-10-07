@@ -75,7 +75,6 @@ class _ActiveSession:
     started_monotonic: float
     writer: SessionTelemetryWriter
     devices: list[dict[str, Any]]
-    kasa: list[dict[str, Any]]
     tares_at_start: dict[str, float]
     components: dict[str, dict[str, Any]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
@@ -326,7 +325,6 @@ class SessionRuntime:
             started_monotonic=started_monotonic,
             writer=writer,
             devices=snapshot["devices"],
-            kasa=snapshot["kasa"],
             tares_at_start=snapshot["tares"],
             components={"telemetry": ComponentResult("ok").as_dict()},
         )
@@ -445,7 +443,6 @@ class SessionRuntime:
             },
             "components": session.components,
             "devices": session.devices,
-            "kasa": session.kasa,
             "tares": {"at_start": session.tares_at_start, "at_stop": self._system_state.core.tares()},
             "cameras": [
                 {
@@ -467,13 +464,15 @@ class SessionRuntime:
                     "source_provider": "provider namespace; combine with source_key to identify the source",
                     "source_key": "stable key within the provider; retained across reconnects and label changes",
                     "sensor_columns": "'<NAME> [<unit>]', tared value to 4 decimals; an empty cell means the sensor was absent from that batch",
-                    "control_columns": "'<group>_<NAME>' using the group declared in the device's QLCP config",
-                    "valve_controls": "1 when the reported state is OPEN, else 0",
-                    "other_boolean_controls": "1 when the reported state is CLOSED, else 0 -- inverted vs valves (normally-closed wiring)",
+                    "control_columns": (
+                        "'<source>_<group>_<NAME>': the source label with non-alphanumerics replaced by '_' (suffixed if two "
+                        "sources share a label), then the group declared in the device's config; no group gives '<source>_<NAME>'"
+                    ),
+                    "relay_controls": "1 when the reported state is CLOSED, else 0 (normally-closed wiring: CLOSED is energized)",
+                    "other_boolean_controls": "1 when the reported state is OPEN/true, else 0",
                     "analog_controls": "the reported setpoint to 4 decimals; an empty cell means it has not been reported",
-                    "kasa_columns": "1 when the outlet is powered; the key is the alias (or host) with non-alphanumerics replaced by '_'",
                     "column_order": (
-                        "device_timestamp, source, then sensors / controls / kasa, each block sorted alphabetically by raw name; "
+                        "device_timestamp, source, then sensors sorted by name, then controls sorted by source, group, and name; "
                         "source_provider and source_key are last"
                     ),
                 },

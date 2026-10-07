@@ -115,8 +115,7 @@ class KasaRuntime:
             dev.host,
             name=dev.alias or dev.host,
             address=dev.host,
-            metadata={"alias": dev.alias or "", "model": dev.model},
-            controls=[ControlDefinition(name="power", group="power", type=ControlType.BOOL)],
+            controls=[ControlDefinition(name="power", type=ControlType.BOOL)],
             control_handler=partial(self._write_power, dev),
             initial_controls={"power": ControlObservation(value=dev.is_on, timestamp=time.monotonic(), status=ControlStatus.CONFIRMED)},
         )

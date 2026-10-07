@@ -29,22 +29,12 @@ class TransportHealth(NamedTuple):
 
 
 @dataclass(frozen=True, slots=True)
-class KasaState:
-    host: str
-    alias: str
-    model: str
-    active: bool
-    connected: bool
-
-
-@dataclass(frozen=True, slots=True)
 class RecordingSchema:
     """A momentary view of declarations, including disconnected sources."""
 
     sensors: tuple[SensorDefinition, ...]
     # Bindings rather than definitions: a column is named for its source as well as its control.
     controls: tuple[ControlBinding, ...]
-    kasa: tuple[KasaState, ...]
 
 
 @dataclass(slots=True)
@@ -118,24 +108,20 @@ class SystemState:
         return next((health for view in self._health_views if (health := view(source)) is not None), None)
 
     def recording_schema(self) -> RecordingSchema:
-        sources = self._ordinary_sources()
+        sources = self._sources()
         return RecordingSchema(
             sensors=tuple(sensor.definition for source in sources for sensor in source.sensors),
             controls=tuple(control for source in sources for control in source.controls),
-            kasa=tuple(self._kasa_state(source) for source in self._kasa_sources()),
         )
 
     def control_states(self) -> dict[tuple[str, str, str], str | None]:
         """Latest reported state of every control, keyed by (provider, key, control name)."""
         states: dict[tuple[str, str, str], str | None] = {}
-        for source in self._ordinary_sources():
+        for source in self._sources():
             for control in source.controls:
                 reported = control.reported
                 states[source.provider, source.key, control.name] = control_state_name(reported.value) if reported else None
         return states
-
-    def kasa_active(self) -> dict[str, bool]:
-        return {source.key: self._kasa_active(source) for source in self._kasa_sources()}
 
     def session(self) -> dict[str, Any] | None:
         if self._session is None:
@@ -173,40 +159,15 @@ class SystemState:
     def snapshot(self) -> dict[str, Any]:
         return {
             "state_version": self._state_version,
-            "devices": [self._snapshot_device(source) for source in self._ordinary_sources()],
-            "kasa": [self._snapshot_kasa(source) for source in self._kasa_sources()],
+            "devices": [self._snapshot_device(source) for source in self._sources()],
             "commands": self._command_view.snapshot() if self._command_view else {"pending": [], "recent": []},
             "stream": asdict(stream) if (stream := self._stream()) is not None else None,
             "tares": self.core.tares(),
             "session": self.session(),
         }
 
-    def _ordinary_sources(self) -> list[Source]:
-        return sorted(
-            (source for source in self.core.sources() if source.provider != "kasa"),
-            key=lambda source: (source.name, source.provider, source.key),
-        )
-
-    def _kasa_sources(self) -> list[Source]:
-        return sorted(self.core.sources(provider="kasa"), key=lambda source: source.key)
-
-    @staticmethod
-    def _kasa_active(source: Source) -> bool:
-        power = source.control("power")
-        reported = power.reported if power is not None else None
-        return bool(reported.value) if reported else False
-
-    def _kasa_state(self, source: Source) -> KasaState:
-        return KasaState(
-            host=source.key,
-            alias=str(source.metadata.get("alias", "")),
-            model=str(source.metadata.get("model", "")),
-            active=self._kasa_active(source),
-            connected=source.connected,
-        )
-
-    def _snapshot_kasa(self, source: Source) -> dict[str, Any]:
-        return {**source_identity(source), **asdict(self._kasa_state(source))}
+    def _sources(self) -> list[Source]:
+        return sorted(self.core.sources(), key=lambda source: (source.name, source.provider, source.key))
 
     def _snapshot_device(self, source: Source) -> dict[str, Any]:
         health = self._health(source)
@@ -264,11 +225,6 @@ class SystemState:
                 self.publish_event("tare.cleared", sensor_name=sensor_name)
             case TareChanged(sensor_name=sensor_name, offset=offset):
                 self.publish_event("tare.updated", sensor_name=sensor_name, offset=offset)
-            case SourceChanged(kind=kind, source=source) if source.provider == "kasa":
-                event_type = "kasa.registered" if kind == "registered" else "kasa.disconnected"
-                self.publish_event(event_type, kasa=self._snapshot_kasa(source))
-            case ControlChanged(control=control) if control.source.provider == "kasa":
-                self.publish_event("kasa.updated", kasa=self._snapshot_kasa(control.source))
             case SourceChanged(kind="registered", source=source):
                 self.publish_event("device.registered", device=self._snapshot_device(source))
             case SourceChanged(kind="closed", source=source):

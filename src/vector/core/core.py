@@ -14,7 +14,6 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from types import MappingProxyType
 from typing import TypeVar
 
 from vector.core.models import (
@@ -92,7 +91,6 @@ class Source:
         sensors: Sequence[SensorDefinition],
         controls: Sequence[ControlDefinition],
         control_handler: ControlHandler | None,
-        metadata: Mapping[str, object],
         initial_controls: Mapping[str, ControlObservation],
     ) -> None:
         self._core = core
@@ -101,7 +99,6 @@ class Source:
         self.name = name
         self.address = address
         self.connection_key = connection_key
-        self.metadata = MappingProxyType(dict(metadata))
         self.sensors = tuple(SensorBinding(self, definition, i) for i, definition in enumerate(sensors))
         self.controls = tuple(ControlBinding(self, definition, i) for i, definition in enumerate(controls))
         self._sensors = {sensor.name: sensor for sensor in self.sensors}
@@ -220,7 +217,6 @@ class Core:
         sensors: Sequence[SensorDefinition] = (),
         controls: Sequence[ControlDefinition] = (),
         control_handler: ControlHandler | None = None,
-        metadata: Mapping[str, object] | None = None,
         initial_controls: Mapping[str, ControlObservation] | None = None,
     ) -> Source:
         """Declare a source, atomically replacing an older registration of its identity.
@@ -247,7 +243,6 @@ class Core:
             sensors=sensors,
             controls=controls,
             control_handler=control_handler,
-            metadata={} if metadata is None else metadata,
             initial_controls={} if initial_controls is None else initial_controls,
         )
         previous = self._sources.get((provider, key))

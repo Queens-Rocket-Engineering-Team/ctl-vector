@@ -10,7 +10,6 @@ from vector.runtime.session_telemetry import (
     SessionTelemetryWriter,
     TelemetrySessionPublisher,
     build_columns,
-    kasa_column_keys,
 )
 
 
@@ -21,17 +20,9 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class _Kasa:
-    host: str
-    alias: str
-    active: bool = False
-
-
-@dataclass
 class _Schema:
     sensors: tuple[SensorDefinition, ...] = ()
     controls: tuple[ControlBinding, ...] = ()
-    kasa: tuple[_Kasa, ...] = ()
 
 
 _SOURCE = ("test", "MockDevice", "MockDevice")  # provider, key, label
@@ -48,20 +39,15 @@ class _FakeState:
         self,
         schema: _Schema,
         controls: dict[str | tuple[str, str, str], str | None] | None = None,
-        kasa: dict[str, bool] | None = None,
     ) -> None:
         self.schema = schema
         self._controls = controls or {}
-        self._kasa = kasa or {}
 
     def recording_schema(self) -> _Schema:
         return self.schema
 
     def control_states(self) -> dict[tuple[str, str, str], str | None]:
         return {(key if isinstance(key, tuple) else (_SOURCE[0], _SOURCE[1], key)): value for key, value in self._controls.items()}
-
-    def kasa_active(self) -> dict[str, bool]:
-        return self._kasa
 
 
 def _sensor(name: str, unit: str = "PSI") -> SensorDefinition:
@@ -111,19 +97,21 @@ def _write(tmp_path: Path, state: _FakeState, batches: list[TelemetryBatch]) -> 
 def test_header_orders_blocks_and_annotates_units() -> None:
     schema = _Schema(
         sensors=(_sensor("TC101", "C"), _sensor("PT101", "PSI")),
-        controls=(_control("AV101", "valve"), _control("SAFE24", "relay"), _control("HEATER1", "heater", ControlType.FLOAT32)),
-        kasa=(_Kasa("10.0.0.5", "Pump"),),
+        controls=(
+            _control("AV101", "valve"), _control("SAFE24", "relay"), _control("HEATER1", "heater", ControlType.FLOAT32),
+            _control("power", "", source=("kasa", "10.0.0.5", "Pump")),
+        ),
     )
 
     plan = build_columns(schema)  # type: ignore[arg-type]
 
     assert plan.header == (
         "device_timestamp,source,PT101 [PSI],TC101 [C],"
-        "MockDevice_heater_HEATER1,MockDevice_relay_SAFE24,MockDevice_valve_AV101,kasa_Pump,source_provider,source_key\n"
+        "MockDevice_heater_HEATER1,MockDevice_relay_SAFE24,MockDevice_valve_AV101,Pump_power,source_provider,source_key\n"
     )
     assert plan.column_names == (
-        "device_timestamp", "source", "PT101", "TC101", "MockDevice_heater_HEATER1", "MockDevice_relay_SAFE24", "MockDevice_valve_AV101", "kasa_Pump",
-        "source_provider", "source_key",
+        "device_timestamp", "source", "PT101", "TC101", "MockDevice_heater_HEATER1", "MockDevice_relay_SAFE24", "MockDevice_valve_AV101",
+        "Pump_power", "source_provider", "source_key",
     )
 
 
@@ -180,12 +168,6 @@ def test_control_group_with_punctuation_is_sanitized() -> None:
     plan = build_columns(_Schema(controls=(_control("X1", "Fill / Vent"),)))  # type: ignore[arg-type]
 
     assert [column.name for column in plan.controls] == ["MockDevice_fill_vent_X1"]
-
-
-def test_kasa_keys_are_sanitized_and_deduplicated() -> None:
-    keys = kasa_column_keys([_Kasa("10.0.0.5", "Pump A"), _Kasa("10.0.0.6", "Pump-A"), _Kasa("10.0.0.7", "")])  # type: ignore[arg-type]
-
-    assert keys == {"10.0.0.5": "Pump_A", "10.0.0.6": "Pump_A_2", "10.0.0.7": "10_0_0_7"}
 
 
 # ---------------------------------------------------------------------------
@@ -264,14 +246,6 @@ def test_unreported_analog_control_leaves_an_empty_cell(tmp_path: Path) -> None:
     _write(tmp_path, state, [_batch({})])
 
     assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,,test,MockDevice"
-
-
-def test_kasa_bit_follows_the_outlet_power_state(tmp_path: Path) -> None:
-    state = _FakeState(_Schema(kasa=(_Kasa("10.0.0.5", "Pump"),)), kasa={"10.0.0.5": True})
-
-    _write(tmp_path, state, [_batch({})])
-
-    assert (tmp_path / "telemetry.csv").read_text().splitlines()[1] == "236711.7952,MockDevice,1,test,MockDevice"
 
 
 def test_a_comma_in_a_sensor_name_is_quoted() -> None:

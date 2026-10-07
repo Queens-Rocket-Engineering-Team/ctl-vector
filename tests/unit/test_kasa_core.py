@@ -51,6 +51,15 @@ class _Device:
         self.is_on = self.hardware_state if self.observed_override is None else self.observed_override
 
 
+def _active(state: SystemState) -> dict[str, bool]:
+    """Each plug's reported power, keyed by host, as the snapshot presents it."""
+    return {
+        device["source_key"]: device["controls"][0]["reported_state"] == "OPEN"
+        for device in state.snapshot()["devices"]
+        if device["source_provider"] == "kasa"
+    }
+
+
 async def _discover(runtime: KasaRuntime, monkeypatch: pytest.MonkeyPatch, *devices: _Device) -> None:
     monkeypatch.setattr("vector.runtime.kasa_runtime.Discover.discover", AsyncMock(return_value={device.host: device for device in devices}))
     await runtime.discover()
@@ -78,16 +87,16 @@ def test_power_is_reported_only_after_readback(monkeypatch: pytest.MonkeyPatch) 
         assert device.writes == [True]
         assert power.reported is not None
         assert power.reported.value is False
-        assert state.kasa_active() == {device.host: False}
+        assert _active(state) == {device.host: False}
         device.refresh_release.set()
         assert await command is None  # Kasa has no command IDs
 
         assert power.reported is not None
         assert power.reported.value is True
-        assert [event["type"] for event in events] == ["kasa.registered", "kasa.updated"]
-        assert state.snapshot()["devices"] == []
-        assert state.recording_schema().controls == ()
-        assert build_columns(state.recording_schema()).header == "device_timestamp,source,kasa_Pump,source_provider,source_key\n"
+        assert [event["type"] for event in events] == ["device.registered", "control.updated"]
+        assert [(device["name"], device["source_key"]) for device in state.snapshot()["devices"]] == [("Pump", device.host)]
+        assert state.recording_schema().controls == (power,)
+        assert build_columns(state.recording_schema()).header == "device_timestamp,source,Pump_power,source_provider,source_key\n"
 
     asyncio.run(run())
 
@@ -130,7 +139,7 @@ def test_failed_readback_disconnects_only_that_source(monkeypatch: pytest.Monkey
 
         assert not broken_source.connected
         assert healthy_source.connected
-        assert state.kasa_active() == {broken.host: False, healthy.host: True}
+        assert _active(state) == {broken.host: False, healthy.host: True}
 
     asyncio.run(run())
 
@@ -156,14 +165,14 @@ def test_polling_reports_hand_toggles_and_closes_an_unresponsive_plug(monkeypatc
         assert quiet_source is not None
         assert toggled_source is not None
         assert quiet_source.connected
-        assert state.kasa_active() == {quiet.host: False, toggled.host: True}
+        assert _active(state) == {quiet.host: False, toggled.host: True}
         assert state.snapshot_heartbeat(quiet_source) == {"state": "missed", "consecutive_misses": POLL_MISS_LIMIT - 1}
         assert state.snapshot_heartbeat(toggled_source) == {"state": "ok", "consecutive_misses": 0}
 
         await runtime.poll_once()
         assert not quiet_source.connected
         assert state.snapshot_heartbeat(quiet_source)["state"] == "disconnected"
-        assert [event["type"] for event in events[-2:]] == ["kasa.updated", "kasa.disconnected"]
+        assert [event["type"] for event in events[-2:]] == ["control.updated", "device.disconnected"]
 
     asyncio.run(run())
 
@@ -204,8 +213,8 @@ def test_delayed_old_readback_cannot_change_rediscovered_source(monkeypatch: pyt
 
         assert core.source("kasa", replacement.host) is new_source
         assert new_source.connected
-        assert state.kasa_active() == {replacement.host: False}
-        assert state.snapshot()["kasa"][0]["alias"] == "Replacement"
+        assert _active(state) == {replacement.host: False}
+        assert state.snapshot()["devices"][0]["name"] == "Replacement"
 
     asyncio.run(run())
 
@@ -226,7 +235,7 @@ def test_rediscovery_keeps_known_plugs_and_registers_new_ones(monkeypatch: pytes
 
         assert core.source("kasa", first.host) is first_source
         assert core.source("kasa", second.host) is not None
-        assert [event["type"] for event in events] == ["kasa.registered", "kasa.registered"]
+        assert [event["type"] for event in events] == ["device.registered", "device.registered"]
 
     asyncio.run(run())
 

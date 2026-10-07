@@ -61,25 +61,14 @@ def _make_state() -> tuple[SystemState, CommandTracker, QLCPStateAdapter, list[S
     return state, tracker, QLCPStateAdapter(state, tracker), events
 
 
-def _register_kasa(core: Core, host: str, alias: str, model: str, active: bool) -> Source:
+def _register_plug(core: Core, host: str, alias: str, active: bool) -> Source:
     return core.register_source(
         "kasa", host,
+        name=alias,
+        address=host,
         controls=(ControlDefinition(name="power"),),
-        metadata={"alias": alias, "model": model},
         initial_controls={"power": ControlObservation(active, 0.0, ControlStatus.CONFIRMED)},
     )
-
-
-def _record_kasa(core: Core, host: str, active: bool) -> None:
-    source = core.source("kasa", host)
-    if source is not None:
-        source.report_control("power", active)
-
-
-def _disconnect_kasa(core: Core, host: str) -> None:
-    source = core.source("kasa", host)
-    if source is not None:
-        source.close()
 
 
 def _mark_sent(
@@ -568,139 +557,23 @@ def test_snapshot_serializes_to_dict() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_register_kasa_device_appears_in_snapshot() -> None:
-    state, _, _qlcp, events = _make_state()
+def test_a_plug_is_an_ordinary_device_with_one_control() -> None:
+    state, _, qlcp, events = _make_state()
+    qlcp.register_device(_make_device(name="PANDA"))
+    plug = _register_plug(state.core, "192.168.1.1", "Heater", True)
+    plug.report_control("power", False)
+    plug.close()
 
-    _register_kasa(state.core, "192.168.1.1", "My Plug", "HS110", True)
-    event = events[-1] if events else None
-    snapshot = state.snapshot()
-
-    assert event["type"] == "kasa.registered"
-    assert event["state_version"] == 1
-    assert len(snapshot["kasa"]) == 1
-    kasa = snapshot["kasa"][0]
-    assert kasa["source_provider"] == "kasa"
-    assert kasa["source_key"] == "192.168.1.1"
-    assert kasa["connection_key"] == state.core.source("kasa", "192.168.1.1").connection_key
-    assert event["kasa"] == kasa
-    assert kasa["host"] == "192.168.1.1"
-    assert kasa["alias"] == "My Plug"
-    assert kasa["model"] == "HS110"
-    assert kasa["active"] is True
-    assert kasa["connected"] is True
-
-
-def test_register_kasa_device_upserts_existing_host() -> None:
-    state, _, _qlcp, _events = _make_state()
-
-    _register_kasa(state.core, "192.168.1.1", "Old Alias", "HS110", False)
-    _register_kasa(state.core, "192.168.1.1", "New Alias", "HS110", True)
-    snapshot = state.snapshot()
-
-    assert len(snapshot["kasa"]) == 1
-    assert snapshot["kasa"][0]["alias"] == "New Alias"
-    assert snapshot["kasa"][0]["active"] is True
-
-
-def test_same_alias_kasa_sources_keep_identity_through_updates_and_replacement() -> None:
-    state, _, _, events = _make_state()
-    old = _register_kasa(state.core, "192.168.1.1", "Shared label", "HS110", False)
-    other = _register_kasa(state.core, "192.168.1.2", "Shared label", "HS110", False)
-    current = _register_kasa(state.core, "192.168.1.1", "Shared label", "HS110", True)
-    events.clear()
-    old.report_control("power", False)
-    old.close()
-    assert events == []
-
-    other.report_control("power", True)
-    current.close()
-    assert [event["type"] for event in events] == ["kasa.updated", "kasa.disconnected"]
-    for event, source in zip(events, (other, current), strict=True):
-        payload = cast("dict[str, Any]", event["kasa"])
-        assert payload["alias"] == "Shared label"
-        assert payload["source_provider"] == "kasa"
-        assert payload["source_key"] == source.key
-        assert payload["connection_key"] == source.connection_key
-
-
-def test_record_kasa_state_updates_active_flag() -> None:
-    state, _, _qlcp, events = _make_state()
-
-    _register_kasa(state.core, "192.168.1.1", "My Plug", "HS110", False)
-    _record_kasa(state.core, "192.168.1.1", True)
-    event = events[-1] if events else None
-    snapshot = state.snapshot()
-
-    assert event is not None
-    assert event["type"] == "kasa.updated"
-    assert event["state_version"] == 2
-    assert snapshot["kasa"][0]["active"] is True
-    assert snapshot["kasa"][0]["connected"] is True
-
-
-def test_record_kasa_state_returns_none_for_unknown_host() -> None:
-    state, _, _qlcp, events = _make_state()
-
-    _record_kasa(state.core, "192.168.1.99", True)
-    event = events[-1] if events else None
-
-    assert event is None
-    assert state.state_version == 0
-
-
-def test_mark_kasa_unavailable_sets_connected_false() -> None:
-    state, _, _qlcp, events = _make_state()
-
-    _register_kasa(state.core, "192.168.1.1", "My Plug", "HS110", True)
-    _disconnect_kasa(state.core, "192.168.1.1")
-    event = events[-1] if events else None
-    snapshot = state.snapshot()
-
-    assert event is not None
-    assert event["type"] == "kasa.disconnected"
-    assert event["state_version"] == 2
-    assert snapshot["kasa"][0]["connected"] is False
-    assert snapshot["kasa"][0]["active"] is True  # active state is preserved
-
-
-def test_mark_kasa_unavailable_returns_none_for_unknown_host() -> None:
-    state, _, _qlcp, events = _make_state()
-
-    _disconnect_kasa(state.core, "192.168.1.99")
-    event = events[-1] if events else None
-
-    assert event is None
-    assert state.state_version == 0
-
-
-def test_snapshot_kasa_sorted_by_host() -> None:
-    state, _, _qlcp, _events = _make_state()
-
-    _register_kasa(state.core, "192.168.1.2", "B", "HS110", True)
-    _register_kasa(state.core, "192.168.1.1", "A", "HS110", True)
-    snapshot = state.snapshot()
-
-    hosts = [k["host"] for k in snapshot["kasa"]]
-    assert hosts == ["192.168.1.1", "192.168.1.2"]
-
-
-def test_snapshot_includes_kasa_key_even_when_empty() -> None:
-    state, _, _qlcp, _events = _make_state()
-
-    snapshot = state.snapshot()
-
-    assert "kasa" in snapshot
-    assert snapshot["kasa"] == []
-
-
-def test_kasa_events_increment_state_version() -> None:
-    state, _, _qlcp, _events = _make_state()
-
-    _register_kasa(state.core, "192.168.1.1", "My Plug", "HS110", True)
-    _record_kasa(state.core, "192.168.1.1", False)
-    _disconnect_kasa(state.core, "192.168.1.1")
-
-    assert state.state_version == 3
+    devices = state.snapshot()["devices"]
+    assert [device["name"] for device in devices] == ["Heater", "PANDA"]  # sorted by label
+    heater = devices[0]
+    assert (heater["source_provider"], heater["source_key"], heater["address"]) == ("kasa", "192.168.1.1", "192.168.1.1")
+    assert heater["sensors"] == []
+    assert [(control["name"], control["type"], control["reported_state"]) for control in heater["controls"]] == [("power", "BOOL", "CLOSED")]
+    assert heater["heartbeat"]["state"] == "disconnected"
+    assert [event["type"] for event in events[1:]] == ["device.registered", "control.updated", "device.disconnected"]
+    assert state.control_states()[("kasa", "192.168.1.1", "power")] == "CLOSED"
+    assert plug.controls[0] in state.recording_schema().controls
 
 
 def test_set_tare_emits_versioned_event_and_appears_in_snapshot() -> None:
@@ -800,19 +673,6 @@ def test_non_qlcp_source_sharing_a_node_key_does_not_borrow_its_health() -> None
 
     states = {(device["source_provider"], device["heartbeat"]["state"]) for device in state.snapshot()["devices"]}
     assert states == {("qlcp", "ok"), ("wireless", "unknown")}
-
-
-def test_kasa_control_has_only_its_existing_recording_column() -> None:
-    state, _, _, _ = _make_state()
-    _register_kasa(state.core, "192.168.1.1", "Pump", "HS110", True)
-
-    schema = state.recording_schema()
-
-    assert schema.controls == ()
-    assert [(entry.host, entry.alias) for entry in schema.kasa] == [("192.168.1.1", "Pump")]
-    assert state.control_states() == {}
-    assert state.kasa_active() == {"192.168.1.1": True}
-    assert len(state.core.source("kasa", "192.168.1.1").controls) == 1
 
 
 def test_transport_health_is_sampled_live_without_advancing_state_version() -> None:

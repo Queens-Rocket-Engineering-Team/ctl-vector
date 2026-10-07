@@ -12,7 +12,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple, Protocol, TextIO, TypeVar
+from typing import TYPE_CHECKING, NamedTuple, TextIO, TypeVar
 
 from vector.core import ControlType
 
@@ -23,16 +23,6 @@ if TYPE_CHECKING:
 
     from vector.core import TelemetryBatch, TelemetryReading
     from vector.state.system_state import RecordingSchema, SystemState
-
-
-class KasaEntry(Protocol):
-    """The parts of a Kasa outlet's state a column key is derived from."""
-
-    @property
-    def host(self) -> str: ...
-
-    @property
-    def alias(self) -> str: ...
 
 
 logger = logging.getLogger(__name__)
@@ -88,23 +78,16 @@ def _unique_keys(labelled: Iterable[tuple[_Id, str]]) -> dict[_Id, str]:
     return keys
 
 
-def kasa_column_keys(kasa: Sequence[KasaEntry]) -> dict[str, str]:
-    """Map Kasa host -> column key from its alias, or its host when it has none."""
-    return _unique_keys((entry.host, entry.alias or entry.host) for entry in kasa)
-
-
 @dataclass(frozen=True, slots=True)
 class ColumnPlan:
     """The frozen column layout of one recording.
 
-    Fixed when recording starts so that a mid-session change -- a renamed Kasa alias, a
+    Fixed when recording starts so that a mid-session change -- a renamed source, a
     device reconnecting -- can never shift columns underneath rows already written.
     """
 
     sensor_names: tuple[str, ...]
     controls: tuple[ControlColumn, ...]
-    # (column name, kasa host), in output order.
-    kasa: tuple[tuple[str, str], ...]
     header: str
     # Derived once here rather than per batch: every ingested batch tests its sensors
     # against this, on the UDP loop.
@@ -117,15 +100,15 @@ class ColumnPlan:
     def column_names(self) -> tuple[str, ...]:
         return (
             "device_timestamp", "source", *self.sensor_names,
-            *(column.name for column in self.controls), *(name for name, _ in self.kasa),
+            *(column.name for column in self.controls),
             *SOURCE_COLUMNS,
         )
 
 
 def build_columns(schema: RecordingSchema, *, readings: Sequence[TelemetryReading] = ()) -> ColumnPlan:
-    """Derive the column layout from a device/Kasa schema.
+    """Derive the column layout from the catalog schema.
 
-    Sensor and Kasa columns match the client recorder exactly. Control columns do not:
+    Sensor columns match the client recorder exactly. Control columns do not:
     that recorder had only ``valve_``/``relay_`` buckets and sorted every non-``AV*``
     control into ``relay_``, which filed the analog heater under a boolean column that
     could only ever read 0. Here a column is ``<source>_<group>_<name>``: the source
@@ -153,21 +136,17 @@ def build_columns(schema: RecordingSchema, *, readings: Sequence[TelemetryReadin
             is_bool=control.type == ControlType.BOOL,
         ))
 
-    kasa_keys = kasa_column_keys(schema.kasa)
-    kasa = tuple(sorted(((f"kasa_{key}", host) for host, key in kasa_keys.items()), key=lambda item: item[0]))
-
     columns = [
         "device_timestamp", "source",
         *(f"{name} [{units[name]}]" if units[name] else name for name in sensor_names),
         *(column.name for column in controls),
-        *(name for name, _ in kasa),
         # Append identity so existing sensor/control column positions stay stable.
         *SOURCE_COLUMNS,
     ]
     header = io.StringIO(newline="")
     csv.writer(header, lineterminator="\n").writerow(columns)
 
-    return ColumnPlan(sensor_names=sensor_names, controls=tuple(controls), kasa=kasa, header=header.getvalue())
+    return ColumnPlan(sensor_names=sensor_names, controls=tuple(controls), header=header.getvalue())
 
 
 def _control_cell(state: str | None, *, is_relay: bool, is_bool: bool) -> str:
@@ -233,7 +212,6 @@ class SessionTelemetryWriter:
                 return
 
         control_states = self._state.control_states()
-        kasa_active = self._state.kasa_active()
 
         cells = [f"{batch.timestamp_s:.4f}", batch.source_name]
         # A sensor missing from this batch leaves an empty cell rather than a zero, so a
@@ -243,7 +221,6 @@ class SessionTelemetryWriter:
             _control_cell(control_states.get((*column.source, column.control)), is_relay=column.is_relay, is_bool=column.is_bool)
             for column in self.plan.controls
         ]
-        cells += ["1" if kasa_active.get(host) else "0" for _, host in self.plan.kasa]
         cells += [batch.source_provider, batch.source_key]
 
         self._writerow(cells)

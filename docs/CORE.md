@@ -12,7 +12,7 @@ A new sensor service only needs to register its definitions and publish measurem
 - A **source** is one independently connected producer, identified by a provider and stable key. Examples are `("qlcp", "PANDA")` and `("kasa", "192.168.0.20")`.
 - A **binding** joins a definition to a source. A command targets control bindings explicitly.
 
-One source can declare many sensors and controls. Several sources can declare the same resource name. Within one source, control names are unique ignoring case, and a registration that repeats one is rejected. Sensor lookup and tares use exact names; control lookup is case-insensitive. The core keeps each source's metadata and control observations separate and does not select a preferred sensor path.
+One source can declare many sensors and controls. Several sources can declare the same resource name. Within one source, control names are unique ignoring case, and a registration that repeats one is rejected. Sensor lookup and tares use exact names; control lookup is case-insensitive. The core keeps each source's control observations separate and does not select a preferred sensor path.
 
 A control is identified by its source and name. The same control name on two sources is two controls, and the recorder gives each its own column.
 
