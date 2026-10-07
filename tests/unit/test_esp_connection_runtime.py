@@ -1,11 +1,15 @@
 import asyncio
 import socket
+from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
 
 import orjson
+import pytest
 
+from vector.core import ControlValidationError, Core
 from vector.qlcp.config_parser import parse_config
+from vector.qlcp.decoding import decode_packet_client
 from vector.qlcp.enums import ControlConfirmStatus, ControlState, ControlType, ErrorCode, PacketType
 from vector.qlcp.packets import (
     AckPacket,
@@ -18,9 +22,12 @@ from vector.qlcp.packets import (
     PacketHeader,
     StatusPacket,
     StatusRequestPacket,
+    StreamStartPacket,
+    StreamStopPacket,
 )
 from vector.runtime.command_tracker import CommandLifecycle, CommandTracker
 from vector.runtime.esp_connection_runtime import ESPConnectionRuntime, ESPDeviceSession
+from vector.runtime.qlcp_state import StreamSetting
 from vector.state.system_state import SystemState
 
 
@@ -94,12 +101,12 @@ def _sent_packets(session: ESPDeviceSession) -> list[object]:
 
 def _make_runtime() -> tuple[ESPConnectionRuntime, CommandTracker, SystemState, FakeStateStream]:
     tracker = CommandTracker()
-    state = SystemState(command_tracker=tracker)
+    state = SystemState(core=Core())
     stream = FakeStateStream()
+    state.set_publisher(stream.publish)
     runtime = ESPConnectionRuntime(
         command_tracker=tracker,
         system_state=state,
-        state_stream=stream,
     )
     return runtime, tracker, state, stream
 
@@ -110,8 +117,9 @@ def _make_session(
     address: str = "10.0.0.2",
     connection_key: str = "conn-a",
     name: str = "TEST-DEVICE",
+    config_dict: dict[str, Any] | None = None,
 ) -> ESPDeviceSession:
-    config = parse_config(_make_config(name=name))
+    config = parse_config(_make_config(name=name) if config_dict is None else config_dict)
     session = SimpleNamespace(
         address=address,
         connection_key=connection_key,
@@ -125,6 +133,7 @@ def _make_session(
         missed_heartbeat_count=0,
         HEARTBEAT_ACK_MISS_LIMIT=3,
         is_connected=True,
+        core_source=None,
     )
 
     def control_name_for_id(control_id: int | None) -> str | None:
@@ -149,6 +158,56 @@ def _make_session(
     session.register_missed_heartbeat = register_missed_heartbeat
     session.close = close
     return cast(ESPDeviceSession, session)
+
+
+def test_stream_setting_is_applied_to_connected_nodes_and_published() -> None:
+    async def run() -> None:
+        runtime, _tracker, state, stream = _make_runtime()
+        first = _make_session(runtime, address="10.0.0.2", name="FIRST")
+        second = _make_session(runtime, address="10.0.0.3", connection_key="conn-b", name="SECOND")
+        for device in (first, second):
+            runtime.devices.register(device)
+            runtime.state_adapter.register_device(device)
+
+        applied = await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=50))
+
+        assert applied == ["FIRST", "SECOND"]
+        for device in (first, second):
+            packet = _sent_packets(device)[-1]
+            assert isinstance(packet, StreamStartPacket)
+            assert packet.frequency_hz == 50
+        updated = [event for event in stream.events if event["type"] == "stream.updated"]
+        assert [event["stream"] for event in updated] == [{"enabled": True, "frequency_hz": 50}]
+        assert state.snapshot()["stream"] == {"enabled": True, "frequency_hz": 50}
+
+        await runtime.set_stream(StreamSetting(enabled=False, frequency_hz=50))
+        assert isinstance(_sent_packets(first)[-1], StreamStopPacket)
+
+    asyncio.run(run())
+
+
+def test_node_registering_while_streaming_is_enabled_receives_stream_start() -> None:
+    async def run() -> None:
+        runtime, tracker, _state, _stream = _make_runtime()
+        runtime.state_adapter.record_stream(StreamSetting(enabled=True, frequency_hz=20))
+        server_sock, peer_sock = socket.socketpair()
+        server_sock.setblocking(False)
+        peer_sock.setblocking(False)
+
+        try:
+            config = _make_config()
+            packet = ConfigPacket(header=PacketHeader(sequence=12, timestamp_us=0), config_json=orjson.dumps(config).decode())
+            session = await runtime.register_configured_device(server_sock, "10.0.0.2", config, packet)
+
+            # The initial STATUS_REQUEST completes on send and is not retained; STREAM_START awaits its ACK.
+            pending = [command.packet_type for command in tracker.pending if command.connection_key == session.connection_key]
+            assert pending == [PacketType.STREAM_START]
+        finally:
+            runtime.close_all()
+            peer_sock.close()
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
 
 
 def test_runtime_registers_valid_device() -> None:
@@ -282,7 +341,7 @@ def test_heartbeat_loop_removes_device_when_expiry_raises() -> None:
         runtime, _tracker, state, stream = _make_runtime()
         session = _make_session(runtime)
         runtime.devices.register(session)
-        state.register_device(session)
+        runtime.state_adapter.register_device(session, control_handler=partial(runtime._write_control, session))
 
         async def _raise(_session: ESPDeviceSession) -> bool:
             raise BrokenPipeError
@@ -302,7 +361,7 @@ def test_first_missed_heartbeat_event_reports_miss_count() -> None:
     runtime, tracker, state, stream = _make_runtime()
     session = _make_session(runtime)
     runtime.devices.register(session)
-    state.register_device(session)
+    runtime.state_adapter.register_device(session, control_handler=partial(runtime._write_control, session))
 
     command = tracker.mark_sent(
         connection_key=session.connection_key,
@@ -329,7 +388,7 @@ def test_runtime_replaces_existing_device_and_fails_pending_commands() -> None:
     other_device = _make_session(runtime, address="10.0.0.4", connection_key="conn-other", name="OTHER")
     runtime.devices.register(old_device)
     runtime.devices.register(other_device)
-    state.register_device(old_device)
+    runtime.state_adapter.register_device(old_device, control_handler=partial(runtime._write_control, old_device))
     pending = tracker.mark_sent(
         connection_key=old_device.connection_key,
         device_name=old_device.name,
@@ -352,7 +411,7 @@ def test_runtime_removal_marks_device_disconnected() -> None:
     runtime, _tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
     runtime.remove_device(device)
 
@@ -361,11 +420,11 @@ def test_runtime_removal_marks_device_disconnected() -> None:
     assert stream.events[-1]["type"] == "device.disconnected"
 
 
-def test_runtime_ack_routes_through_tracker_and_records_accepted_control_state() -> None:
+def test_control_ack_completes_the_command_without_recording_control_state() -> None:
     runtime, tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
     command = tracker.mark_sent(
         connection_key=device.connection_key,
         device_name=device.name,
@@ -391,17 +450,18 @@ def test_runtime_ack_routes_through_tracker_and_records_accepted_control_state()
     )
 
     assert command.state == CommandLifecycle.ACKED
+    # Only STATUS reports control state; an ACK says the packet arrived, not where the valve is.
     control = state.snapshot()["devices"][0]["controls"][0]
-    assert control["accepted_state"] == "OPEN"
     assert control["reported_state"] is None
-    assert [event["type"] for event in stream.events[-2:]] == ["command.acked", "control.accepted"]
+    assert "accepted_state" not in control
+    assert stream.events[-1]["type"] == "command.acked"
 
 
 def test_runtime_nack_routes_through_tracker_without_control_update() -> None:
     runtime, tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
     command = tracker.mark_sent(
         connection_key=device.connection_key,
         device_name=device.name,
@@ -434,10 +494,11 @@ def test_runtime_nack_routes_through_tracker_without_control_update() -> None:
 
 def test_set_control_sends_integer_state_for_variable_control() -> None:
     async def run() -> None:
-        runtime, _tracker, _state, _stream = _make_runtime()
+        runtime, _tracker, state, _stream = _make_runtime()
         device = _make_session(runtime)
+        runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
-        assert await runtime.set_control(device, "HEATER1", "75") is True
+        assert await state.core.set_control(device.core_source.control("HEATER1"), 75) is not None
 
         packet = _sent_packets(device)[-1]
         assert isinstance(packet, ControlPacket)
@@ -449,10 +510,11 @@ def test_set_control_sends_integer_state_for_variable_control() -> None:
 
 def test_set_control_sends_float_state_for_variable_control() -> None:
     async def run() -> None:
-        runtime, _tracker, _state, _stream = _make_runtime()
+        runtime, _tracker, state, _stream = _make_runtime()
         device = _make_session(runtime)
+        runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
-        assert await runtime.set_control(device, "HEATER2", "62.5") is True
+        assert await state.core.set_control(device.core_source.control("HEATER2"), 62.5) is not None
 
         packet = _sent_packets(device)[-1]
         assert isinstance(packet, ControlPacket)
@@ -462,33 +524,11 @@ def test_set_control_sends_float_state_for_variable_control() -> None:
     asyncio.run(run())
 
 
-def test_set_control_rejects_non_numeric_state_for_variable_control() -> None:
-    async def run() -> None:
-        runtime, _tracker, _state, _stream = _make_runtime()
-        device = _make_session(runtime)
-
-        assert await runtime.set_control(device, "HEATER1", "OPEN") is False
-        assert _sent_packets(device) == []
-
-    asyncio.run(run())
-
-
-def test_set_control_rejects_numeric_state_for_bool_control() -> None:
-    async def run() -> None:
-        runtime, _tracker, _state, _stream = _make_runtime()
-        device = _make_session(runtime)
-
-        assert await runtime.set_control(device, "VALVE1", "75") is False
-        assert _sent_packets(device) == []
-
-    asyncio.run(run())
-
-
 def test_runtime_status_updates_reported_control_state() -> None:
     runtime, _tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
     runtime.handle_status(
         device,
@@ -514,7 +554,7 @@ def test_runtime_unsolicited_status_skips_ack_tracking() -> None:
     runtime, tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
     pending = tracker.mark_sent(
         connection_key=device.connection_key,
@@ -544,7 +584,7 @@ def test_runtime_status_error_preserves_last_known_state() -> None:
     runtime, _tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
     runtime.handle_status(
         device,
@@ -574,11 +614,38 @@ def test_runtime_status_error_preserves_last_known_state() -> None:
     assert stream.events[-1]["type"] == "control.error"
 
 
+def test_runtime_status_with_mismatched_type_marks_error_and_keeps_the_node() -> None:
+    """STATUS carries its own per-control type; one that disagrees with CONFIG must not drop the session."""
+    runtime, _tracker, state, stream = _make_runtime()
+    device = _make_session(runtime)
+    runtime.devices.register(device)
+    runtime.state_adapter.register_device(device)
+
+    runtime.handle_status(
+        device,
+        StatusPacket(
+            header=PacketHeader(sequence=1, timestamp_us=0),
+            ack_packet_type=PacketType.NO_ACK,
+            ack_sequence=0,
+            control_states=[
+                ControlStatus(id=0, type=ControlType.UINT32, state=1),  # VALVE1 is declared BOOL
+                ControlStatus(id=1, type=ControlType.UINT32, state=75),
+            ],
+        ),
+    )
+
+    valve, heater, _ = state.snapshot()["devices"][0]["controls"]
+    assert (valve["reported_state"], valve["reported_status"]) == (None, "error")
+    assert (heater["reported_state"], heater["reported_status"]) == ("75", "confirmed")
+    assert runtime.devices.by_address(device.address) is device
+    assert [event["type"] for event in stream.events[-2:]] == ["control.error", "control.updated"]
+
+
 def test_runtime_status_pending_control_is_not_settled() -> None:
     runtime, _tracker, state, _stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
     runtime.handle_status(
         device,
@@ -630,6 +697,8 @@ def test_runtime_command_visibility_policy_for_status_request_and_estop() -> Non
                 "state_version": 1,
                 "command": {
                     "command_id": estop.command_id,
+                    "source_provider": "qlcp",
+                    "source_key": device.name,
                     "connection_key": device.connection_key,
                     "device_address": device.address,
                     "device_name": device.name,
@@ -658,7 +727,7 @@ def test_status_packet_with_no_controls_does_not_error(caplog: Any) -> None:
     runtime, _tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
     empty_status = StatusPacket(
         header=PacketHeader(
@@ -685,11 +754,11 @@ def test_remove_device_cleanup_before_mark_disconnected() -> None:
     runtime, _tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
     # Patch cleanup_device and mark_disconnected to record call order.
     original_cleanup = runtime.cleanup_device
-    original_mark = runtime.system_state.mark_disconnected
+    original_mark = runtime.state_adapter.mark_disconnected
 
     def recording_cleanup(session: Any, *, reason: str = "connection_cleanup") -> None:
         close_called_at.append("cleanup")
@@ -700,7 +769,7 @@ def test_remove_device_cleanup_before_mark_disconnected() -> None:
         return original_mark(session)
 
     runtime.cleanup_device = recording_cleanup  # type: ignore[assignment]
-    runtime.system_state.mark_disconnected = recording_mark  # type: ignore[assignment]
+    runtime.state_adapter.mark_disconnected = recording_mark  # type: ignore[assignment]
 
     runtime.remove_device(device)
 
@@ -713,10 +782,10 @@ def test_close_all_cleanup_before_mark_disconnected() -> None:
     runtime, _tracker, state, stream = _make_runtime()
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
     original_cleanup = runtime.cleanup_device
-    original_mark = runtime.system_state.mark_disconnected
+    original_mark = runtime.state_adapter.mark_disconnected
 
     def recording_cleanup(session: Any, *, reason: str = "connection_cleanup") -> None:
         close_called_at.append("cleanup")
@@ -727,7 +796,7 @@ def test_close_all_cleanup_before_mark_disconnected() -> None:
         return original_mark(session)
 
     runtime.cleanup_device = recording_cleanup  # type: ignore[assignment]
-    runtime.system_state.mark_disconnected = recording_mark  # type: ignore[assignment]
+    runtime.state_adapter.mark_disconnected = recording_mark  # type: ignore[assignment]
 
     runtime.close_all()
 
@@ -739,18 +808,16 @@ def test_disconnection_metric_recorded_on_remove_device() -> None:
     from vector.runtime.metrics import Metrics
 
     tracker = CommandTracker()
-    state = SystemState(command_tracker=tracker)
-    stream = FakeStateStream()
+    state = SystemState(core=Core())
     metrics = Metrics()
     runtime = ESPConnectionRuntime(
         command_tracker=tracker,
         system_state=state,
-        state_stream=stream,
         metrics=metrics,
     )
     device = _make_session(runtime)
     runtime.devices.register(device)
-    state.register_device(device)
+    runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
 
     runtime.remove_device(device)
 
@@ -796,5 +863,94 @@ def test_runtime_monitor_routes_packets_to_packet_handler() -> None:
             await asyncio.gather(task, return_exceptions=True)
             session_sock.close()
             peer_sock.close()
+
+    asyncio.run(run())
+
+
+
+def test_core_dispatches_each_control_to_its_wire_id() -> None:
+    async def run() -> None:
+        runtime, tracker, state, _stream = _make_runtime()
+        config = _make_config()
+        config["controls"] = {
+            "valve": {"AV101": {"type": "BOOL", "default_state": "CLOSED"}},
+            "relay": {"RL101": {"type": "BOOL", "default_state": "CLOSED"}},
+        }
+        device = _make_session(runtime, config_dict=config)
+        runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
+        targets = device.core_source.controls
+
+        command_ids = [await state.core.set_control(target, True) for target in targets]
+
+        packets = _sent_packets(device)
+        assert len(packets) == 2
+        assert all(isinstance(packet, ControlPacket) for packet in packets)
+        decoded = [decode_packet_client(cast("ControlPacket", packet).encode()) for packet in packets]
+        assert all(isinstance(packet, ControlPacket) for packet in decoded)
+        controls = [cast("ControlPacket", packet) for packet in decoded]
+        assert [packet.control_id for packet in controls] == [0, 1]
+        assert [packet.control_state for packet in controls] == [ControlState.OPEN, ControlState.OPEN]
+        assert [command.control_id for command in tracker.pending] == [0, 1]
+        assert command_ids == [command.command_id for command in tracker.pending]
+        assert len(set(command_ids)) == 2
+
+        runtime.handle_ack(device, AckPacket.create(cast("ControlPacket", packets[0])))
+        assert [command.control_id for command in tracker.pending] == [1]
+        runtime.handle_ack(device, AckPacket.create(cast("ControlPacket", packets[1])))
+        assert tracker.pending == ()
+
+    asyncio.run(run())
+
+
+def test_core_dispatch_preserves_each_bindings_wire_type() -> None:
+    async def run() -> None:
+        runtime, _tracker, state, _stream = _make_runtime()
+        config = _make_config()
+        config["controls"] = {
+            "valve": {"AV101": {"type": "BOOL", "default_state": "CLOSED"}},
+            "heater": {"HTR101": {"type": "INT32", "default_state": "0"}},
+        }
+        device = _make_session(runtime, config_dict=config)
+        runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
+        boolean, integer = device.core_source.controls
+
+        await state.core.set_control(boolean, True)
+        await state.core.set_control(integer, -25)
+
+        decoded = [decode_packet_client(cast("ControlPacket", packet).encode()) for packet in _sent_packets(device)]
+        assert all(isinstance(packet, ControlPacket) for packet in decoded)
+        controls = [cast("ControlPacket", packet) for packet in decoded]
+        assert [(packet.control_id, packet.control_type, packet.control_state) for packet in controls] == [
+            (0, ControlType.BOOL, ControlState.OPEN),
+            (1, ControlType.INT32, -25),
+        ]
+
+        # Control lookup is case-insensitive within the node.
+        await state.core.set_control(device.core_source.control("htr101"), 15)
+        last_packet = cast("ControlPacket", _sent_packets(device)[-1])
+        assert last_packet.control_id == 1
+        assert last_packet.control_state == 15
+
+    asyncio.run(run())
+
+
+def test_out_of_range_setpoint_is_refused_without_dropping_the_node() -> None:
+    async def run() -> None:
+        runtime, tracker, state, _stream = _make_runtime()
+        device = _make_session(runtime)
+        runtime.devices.register(device)
+        runtime.state_adapter.register_device(device, control_handler=partial(runtime._write_control, device))
+        # HEATER1 is declared UINT32 and HEATER2 FLOAT32.
+        for name, value, wire_type in (
+            ("HEATER1", -1, "UINT32"), ("HEATER1", 2**32, "UINT32"),
+            ("HEATER2", 1e39, "FLOAT32"), ("HEATER2", -1e39, "FLOAT32"),
+        ):
+            with pytest.raises(ControlValidationError, match=wire_type):
+                await state.core.set_control(device.core_source.control(name), value)
+
+        assert _sent_packets(device) == []
+        assert tracker.pending == ()
+        assert runtime.devices.by_address(device.address) is device
+        assert device.core_source.connected
 
     asyncio.run(run())

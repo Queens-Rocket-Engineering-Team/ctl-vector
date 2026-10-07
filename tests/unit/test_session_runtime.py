@@ -2,40 +2,26 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path, PurePosixPath
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 
 import pytest
 
-from vector.qlcp.config_parser import parse_config
-from vector.runtime.command_tracker import CommandTracker
+from vector.core import ControlDefinition, Core, SensorDefinition, TelemetryBatch, TelemetryReading
 from vector.runtime.recording_paths import RecordingPaths
 from vector.runtime.session_runtime import SessionConflictError, SessionRuntime, slugify
 from vector.runtime.session_telemetry import TelemetrySessionPublisher
-from vector.runtime.telemetry_ingest import TelemetryBatch, TelemetryReading
 from vector.state.system_state import SystemState
 
 
-if TYPE_CHECKING:
-    from vector.runtime.esp_connection_runtime import ESPDeviceSession
-
-
 def _register_device(state: SystemState, device_name: str = "MockDevice", address: str = "10.0.0.1") -> None:
-    """Register a device so a recording started now knows its columns."""
-    config = parse_config({
-        "device_name": device_name,
-        "sensors": {"pressure_transducer": {"PT101": {"sensor_index": "PT1", "unit": "PSI"}}},
-        "controls": {"valve": {"AV101": {"control_index": "AV1", "type": "BOOL", "default_state": "CLOSED"}}},
-    })
-    session = SimpleNamespace(
-        name=config.name,
+    """Register resources so a recording started now knows its columns."""
+    state.core.register_source(
+        "test", device_name,
         address=address,
         connection_key=f"conn-{address}",
-        qlcp_config=config,
-        last_sync_time=1.0,
-        missed_heartbeat_count=0,
+        sensors=(SensorDefinition("PT101", "pressure_transducer", "PSI"),),
+        controls=(ControlDefinition("AV101", "valve", default=False),),
     )
-    state.register_device(cast("ESPDeviceSession", session))
 
 
 class _FakeCamera:
@@ -121,17 +107,17 @@ def _make_runtime(
     camera_start_delay_s: float = 0.0,
     shutdown_timeout_s: float = 30.0,
 ) -> tuple[SessionRuntime, SystemState, TelemetrySessionPublisher, _FakeStateStream, _FakeCameraRuntime, _FakeAudioRuntime]:
-    state = SystemState(command_tracker=CommandTracker())
+    state = SystemState(core=Core())
     _register_device(state)
     publisher = TelemetrySessionPublisher()
     stream = _FakeStateStream()
+    state.set_publisher(stream.publish)
     camera_runtime = _FakeCameraRuntime(cameras, camera_failures, hangs_on_stop=cameras_hang_on_stop, start_delay_s=camera_start_delay_s)
     audio_runtime = _FakeAudioRuntime(error=audio_error)
     runtime = SessionRuntime(
         paths=RecordingPaths.from_config({"root": str(tmp_path), "mediamtx_container_root": "/recordings"}),
         telemetry_publisher=publisher,
         system_state=state,
-        state_stream=stream,  # type: ignore[arg-type]
         camera_runtime=camera_runtime,  # type: ignore[arg-type]
         audio_runtime=audio_runtime,  # type: ignore[arg-type]
         shutdown_timeout_s=shutdown_timeout_s,
@@ -141,13 +127,15 @@ def _make_runtime(
 
 def _batch(value: float = 1.0) -> TelemetryBatch:
     return TelemetryBatch(
-        device_name="MockDevice",
-        device_address="10.0.0.1",
+        source_provider="qlcp",
+        source_key="MockDevice",
+        source_name="MockDevice",
+        source_address="10.0.0.1",
         connection_key="10.0.0.1:1",
         timestamp_s=100.0,
         timestamp_source="server_receive",
         timestamp_synced=False,
-        readings=(TelemetryReading(sensor_id=0, sensor_name="PT101", value=value, unit_name="PSI", sensor_type="pressure_transducer"),),
+        readings=(TelemetryReading(sensor_id=0, sensor_name="PT101", value=value, unit="PSI", group="pressure_transducer"),),
     )
 
 

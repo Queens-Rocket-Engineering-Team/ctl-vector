@@ -11,6 +11,7 @@ import pytest
 from fastapi import WebSocket
 
 from vector.api.routers.streams import parse_downsample_algorithm
+from vector.core import TelemetryBatch, TelemetryReading
 from vector.runtime.metrics import Metrics
 from vector.runtime.telemetry_display_stream import (
     DEFAULT_DOWNSAMPLE_ALGORITHM,
@@ -21,7 +22,6 @@ from vector.runtime.telemetry_display_stream import (
     _SensorBuffer,
     default_downsamplers,
 )
-from vector.runtime.telemetry_ingest import TelemetryBatch, TelemetryReading
 
 
 # ---------------------------------------------------------------------------
@@ -74,15 +74,15 @@ def _make_reading(
     sensor_id: int = 0,
     sensor_name: str = "PT101",
     value: float = 100.0,
-    unit_name: str = "PSI",
-    sensor_type: str = "pressure_transducer",
+    unit: str = "PSI",
+    group: str = "pressure_transducer",
 ) -> TelemetryReading:
     return TelemetryReading(
         sensor_id=sensor_id,
         sensor_name=sensor_name,
         value=value,
-        unit_name=unit_name,
-        sensor_type=sensor_type,
+        unit=unit,
+        group=group,
     )
 
 
@@ -91,10 +91,14 @@ def _make_batch(
     readings: tuple[TelemetryReading, ...] | None = None,
     device_name: str = "MockDevice",
     connection_key: str = "esp-1",
+    source_provider: str = "qlcp",
+    source_key: str = "MockDevice",
 ) -> TelemetryBatch:
     return TelemetryBatch(
-        device_name=device_name,
-        device_address="10.0.0.1",
+        source_provider=source_provider,
+        source_key=source_key,
+        source_name=device_name,
+        source_address="10.0.0.1",
         connection_key=connection_key,
         timestamp_s=timestamp_s,
         readings=readings if readings is not None else (_make_reading(),),
@@ -103,8 +107,10 @@ def _make_batch(
     )
 
 
-def _bucket_key(device_name: str = "MockDevice", connection_key: str = "esp-1") -> tuple[str, str]:
-    return (device_name, connection_key)
+def _bucket_key(
+    source_key: str = "MockDevice", connection_key: str = "esp-1", source_provider: str = "qlcp",
+) -> tuple[str, str, str]:
+    return (source_provider, source_key, connection_key)
 
 
 async def _connect(stream: TelemetryDisplayStream) -> FakeWebSocket:
@@ -286,9 +292,9 @@ def test_buckets_are_independent_per_device() -> None:
         ws = await _connect(stream)
         interval = 1.0 / 30.0
 
-        stream.publish_batch(_make_batch(timestamp_s=1.0, device_name="DevA"))
-        stream.publish_batch(_make_batch(timestamp_s=1.0, device_name="DevB"))
-        stream.publish_batch(_make_batch(timestamp_s=1.0 + interval * 1.5, device_name="DevA"))
+        stream.publish_batch(_make_batch(timestamp_s=1.0, device_name="DevA", source_key="DevA"))
+        stream.publish_batch(_make_batch(timestamp_s=1.0, device_name="DevB", source_key="DevB"))
+        stream.publish_batch(_make_batch(timestamp_s=1.0 + interval * 1.5, device_name="DevA", source_key="DevA"))
 
         queue = stream._clients[_as_ws(ws)]
         assert queue.qsize() == 1
@@ -312,6 +318,35 @@ def test_buckets_are_independent_per_connection_for_same_device_name() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("other_identity", [("b", "sensor"), ("a", "other")])
+def test_display_points_keep_sources_separate_when_labels_and_connections_collide(
+    other_identity: tuple[str, str],
+) -> None:
+    async def run() -> None:
+        stream = _make_stream(target_hz=1.0)
+        ws = await _connect(stream)
+        identities = [("a", "sensor"), other_identity]
+        for (provider, key), value in zip(identities, (10.0, 20.0), strict=True):
+            stream.publish_batch(_make_batch(
+                timestamp_s=1.0, source_provider=provider, source_key=key,
+                readings=(_make_reading(value=value),),
+            ))
+        for provider, key in identities:
+            stream.publish_batch(_make_batch(timestamp_s=2.0, source_provider=provider, source_key=key))
+
+        queue = stream._clients[_as_ws(ws)]
+        assert queue.qsize() == 2
+        messages = [queue.get_nowait(), queue.get_nowait()]
+        assert [(message["source_provider"], message["source_key"]) for message in messages] == identities
+        assert [message["readings"][0]["points"] for message in messages] == [
+            [{"t": 1.0, "v": 10.0}], [{"t": 1.0, "v": 20.0}],
+        ]
+        assert {message["device_name"] for message in messages} == {"MockDevice"}
+        assert {message["connection_key"] for message in messages} == {"esp-1"}
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------------------
 # serialize_bucket wire format
 # ---------------------------------------------------------------------------
@@ -330,6 +365,8 @@ def test_serialize_bucket_wire_format() -> None:
 
         assert msg["type"] == "telemetry.display_batch"
         assert msg["algorithm"] == "m4"
+        assert msg["source_provider"] == "qlcp"
+        assert msg["source_key"] == "MockDevice"
         assert msg["device_name"] == "MockDevice"
         assert msg["device_address"] == "10.0.0.1"
         assert msg["connection_key"] == "esp-1"

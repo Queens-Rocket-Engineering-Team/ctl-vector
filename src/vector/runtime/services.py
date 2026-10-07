@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from vector.core import Core
 from vector.integrations.mediamtx import MediaMTXClient
 from vector.runtime.audio_runtime import AudioRuntime
 from vector.runtime.camera_runtime import CameraRuntime
@@ -40,6 +41,7 @@ class RuntimeServices:
     Owns runtime daemon lifecycle and startup actions.
     """
 
+    core: Core
     command_tracker: CommandTracker
     metrics: Metrics
     system_state: SystemState
@@ -79,9 +81,9 @@ class RuntimeServices:
         logger.info("Starting camera discovery daemon...")
         self._tasks["camera_connector"] = loop.create_task(self.camera_runtime.connect_all_cameras())
 
-        # Kasa discovery daemon
-        logger.info("Starting Kasa discovery daemon...")
-        self._tasks["kasa_discoverer"] = loop.create_task(self.kasa_runtime.discover())
+        # Kasa liveness polling; discovery registers plugs through the discovery service.
+        logger.info("Starting Kasa poll daemon...")
+        self._tasks["kasa"] = loop.create_task(self.kasa_runtime.run())
 
         # Log stream daemon
         logger.info("Starting log stream daemon...")
@@ -118,28 +120,27 @@ class RuntimeServices:
 def build_runtime(config: ServerConfig) -> RuntimeServices:
     """Top-level composition root for the server's runtime object graph. Build once at startup and pass around the resulting object."""
     metrics = Metrics()
+    core = Core()
     command_tracker = CommandTracker(metrics=metrics)
-    system_state = SystemState(command_tracker=command_tracker)
+    system_state = SystemState(core=core)
     state_stream = StateStream(system_state, metrics=metrics)
+    system_state.set_publisher(state_stream.publish)
     log_stream = LogStream(metrics=metrics)
-    discovery_service = DiscoveryService()
     telemetry_stream = TelemetryStreamRuntime(metrics=metrics)
     telemetry_display_stream = TelemetryDisplayStream(metrics=metrics)
     esp_runtime = ESPConnectionRuntime(
         command_tracker=command_tracker,
         system_state=system_state,
-        state_stream=state_stream,
         metrics=metrics,
     )
-    # Permanently registered rather than swapped in when recording starts, so the ingest
-    # loop's publisher tuple is never mutated; it is a no-op until a session attaches.
+    # These consumers share the core's lifetime, so subscribe once here, not on
+    # provider reconnect. The session publisher is a no-op until recording starts.
     telemetry_session = TelemetrySessionPublisher()
+    core.subscribe_samples(telemetry_stream.publish_batch)
+    core.subscribe_samples(telemetry_display_stream.publish_batch)
+    core.subscribe_samples(telemetry_session.publish_batch)
     telemetry_runtime = TelemetryRuntime(
         esp_runtime.get_device_by_address,
-        telemetry_stream,
-        telemetry_display_stream,
-        telemetry_session,
-        tare_for=system_state.tare_for,
         metrics=metrics,
     )
     recording_paths = RecordingPaths.from_config(config["services"]["recordings"])
@@ -153,16 +154,19 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
         recording_paths=recording_paths,
     )
     gui_watchdog = GUIWatchdog(state_stream=state_stream, esp_runtime=esp_runtime, metrics=metrics)
-    kasa_runtime = KasaRuntime(system_state=system_state, state_stream=state_stream)
+    kasa_runtime = KasaRuntime(core=core)
+    system_state.add_health_view(kasa_runtime.health)
+    # One discovery request reaches every provider; the periodic loop covers plugs that reappear.
+    discovery_service = DiscoveryService(providers=[kasa_runtime.discover])
     session_runtime = SessionRuntime(
         paths=recording_paths,
         telemetry_publisher=telemetry_session,
         system_state=system_state,
-        state_stream=state_stream,
         camera_runtime=camera_runtime,
         audio_runtime=audio_runtime,
     )
     return RuntimeServices(
+        core=core,
         command_tracker=command_tracker,
         metrics=metrics,
         system_state=system_state,

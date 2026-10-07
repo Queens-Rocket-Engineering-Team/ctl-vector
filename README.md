@@ -31,6 +31,7 @@ Start with [ARCHITECTURE.md](ARCHITECTURE.md) for the deployment diagram, code m
 
 | Subsystem | Reference |
 |---|---|
+| Shared core | [Resource definitions, provider interface, reading and command walkthroughs](docs/CORE.md) |
 | Nodes and commands | [Discovery, connection lifetime, response tracking](docs/NODES.md) |
 | Telemetry | [Ingest, timestamps, taring, display downsampling](docs/TELEMETRY.md) |
 | HELM and other clients | [REST, WebSocket state, client capabilities](docs/CLIENTS.md) |
@@ -88,7 +89,7 @@ With VECTOR running, start a simulated node in another terminal:
 uv run -m tests.mock_device --server 127.0.0.1
 ```
 
-In VECTOR's interactive terminal, use `list` to check registration and `stream MockDevice 30` to request readings. `help` lists the other commands. HELM can connect to the same server for testing its displays and controls.
+In VECTOR's interactive terminal, use `list` to check registration and `stream 30` to have every node stream readings. `help` lists the other commands. HELM can connect to the same server for testing its displays and controls.
 
 For GPS/flight-display work, use `uv run -m tests.chimera_mock_device --server 127.0.0.1`. Omit `--server` from either simulator to exercise multicast discovery.
 

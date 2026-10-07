@@ -3,13 +3,15 @@ import asyncio
 import logging
 import socket
 import time
+from functools import partial
 from itertools import count
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import orjson
 
+from vector.core import ControlDispatchError, ControlValidationError
 from vector.drivers.esp import ESPDriver, ESPDriverConnectionClosedError
-from vector.qlcp.config_parser import QLCPConfigError, cast_control_state, parse_config
+from vector.qlcp.config_parser import parse_config
 from vector.qlcp.enums import ControlState, PacketType
 from vector.qlcp.native import get_timestamp_us
 from vector.qlcp.packets import (
@@ -30,11 +32,13 @@ from vector.qlcp.packets import (
 )
 from vector.runtime.device_registry import DeviceRegistry
 from vector.runtime.metrics import Metrics
+from vector.runtime.qlcp_state import QLCPStateAdapter, StreamSetting, to_qlcp_state
 
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from vector.core import ControlBinding, ControlValue, Source
     from vector.qlcp.config_models import ControlConfig, SensorConfig
     from vector.qlcp.decoding import ServerReceivedPacket
     from vector.runtime.command_tracker import CommandRecord, CommandTracker
@@ -57,15 +61,6 @@ TCP_PORT = 50000
 CONFIG_HANDSHAKE_TIMEOUT_S = 10.0
 
 
-def normalize_control_name(control_name: str) -> str:
-    """Normalize a control name to the key format used by ESPDeviceSession.controls."""
-    return control_name.upper()
-
-
-class _StatePublisher(Protocol):
-    def publish(self, event: dict[str, object] | None) -> None: ...
-
-
 class ESPDeviceSession:
     """One active configured TCP connection for a QLCP/ESP device."""
 
@@ -84,6 +79,7 @@ class ESPDeviceSession:
         self.address = address
         self.connection_key = connection_key
         self.qlcp_config = parse_config(config)
+        self.core_source: Source | None = None
         self.driver = ESPDriver(tcp_socket, address)
 
         self.last_sync_time: float | None = None
@@ -114,7 +110,7 @@ class ESPDeviceSession:
 
     @property
     def controls(self) -> dict[str, ControlConfig]:
-        """Controls keyed by uppercased name; look up with normalize_control_name()."""
+        """Controls keyed by uppercased name."""
         return {control.name.upper(): control for control in self.qlcp_config.controls_by_id.values()}
 
     def register_missed_heartbeat(self) -> bool:
@@ -166,7 +162,6 @@ class ESPConnectionRuntime:
     def __init__(
         self,
         *,
-        state_stream: _StatePublisher,
         command_tracker: CommandTracker,
         system_state: SystemState,
         metrics: Metrics | None = None,
@@ -174,8 +169,8 @@ class ESPConnectionRuntime:
         self.devices = DeviceRegistry()
         self.metrics = metrics or Metrics()
         self.command_tracker = command_tracker
-        self.system_state = system_state
-        self.state_stream = state_stream
+        self.core = system_state.core
+        self.state_adapter = QLCPStateAdapter(system_state, command_tracker)
         self._connection_counter = count(1)
 
     def next_connection_key(self) -> str:
@@ -185,10 +180,6 @@ class ESPConnectionRuntime:
     def get_registered_devices(self) -> dict[str, ESPDeviceSession]:
         """Return a snapshot of the currently registered devices by address."""
         return self.devices.snapshot_by_address()
-
-    def _emit(self, event: dict[str, object] | None) -> None:
-        """Emit an event to the state stream."""
-        self.state_stream.publish(event)
 
     def is_current_connection(self, session: ESPDeviceSession) -> bool:
         """Return True if *session* is the currently registered session for its address."""
@@ -282,7 +273,7 @@ class ESPConnectionRuntime:
         # Register the new session and emit a state event.
         self.devices.register(new_session)
         self.metrics.record_device_connection(device=new_session.name)
-        self._emit(self.system_state.register_device(new_session))
+        self.state_adapter.register_device(new_session, control_handler=partial(self._write_control, new_session))
 
         # Start the session's monitor and heartbeat tasks.
         self._start_session_tasks(new_session)
@@ -298,6 +289,12 @@ class ESPConnectionRuntime:
             status_request = StatusRequestPacket.create()
             await self.send_tracked_command(new_session, status_request)
             logger.debug("Sent initial STATUS_REQUEST to %s", new_session.name)
+
+            # A node starts silent, so apply the stand-wide stream setting here.
+            setting = self.state_adapter.stream
+            if setting.enabled:
+                await self.send_tracked_command(new_session, StreamStartPacket.create(frequency_hz=setting.frequency_hz))
+                logger.info("Sent STREAM_START (%d Hz) to %s", setting.frequency_hz, new_session.name)
         except Exception:
             logger.exception("Post-registration setup failed for %s. Removing device.", new_session.name)
             self.remove_device(new_session)
@@ -386,7 +383,7 @@ class ESPConnectionRuntime:
             self.command_tracker.discard(command.command_id)
             raise
 
-        self._emit(self.system_state.record_command_sent(command))
+        self.state_adapter.record_command(command)
         return command
 
     async def send_timesync_response(
@@ -419,53 +416,46 @@ class ESPConnectionRuntime:
     # Device command operations                                            #
     # ------------------------------------------------------------------ #
 
+    async def set_stream(self, setting: StreamSetting) -> list[str]:
+        """Hold the stand-wide stream setting and apply it to every connected node.
+
+        Returns the names of the nodes the setting reached; a node that cannot be
+        reached is removed, as for any failed send. Nodes that connect later
+        receive the setting at registration.
+        """
+        self.state_adapter.record_stream(setting)
+        return [session.name for session in list(self.devices.values()) if await self._apply_stream(session)]
+
+    async def _apply_stream(self, session: ESPDeviceSession) -> bool:
+        setting = self.state_adapter.stream
+        if setting.enabled:
+            packet = StreamStartPacket.create(frequency_hz=setting.frequency_hz)
+            return await self._send_or_remove(session, packet, f"STREAM_START ({setting.frequency_hz} Hz)")
+        return await self._send_or_remove(session, StreamStopPacket.create(), "STREAM_STOP command")
+
     async def get_single(self, session: ESPDeviceSession) -> bool:
         """Request a single data sample from the device. Returns True if the command was sent."""
         return await self._send_or_remove(session, GetSinglePacket.create(), "GET_SINGLE command")
 
-    async def start_streaming(self, session: ESPDeviceSession, frequency_hz: int) -> bool:
-        """Request the device to start streaming data at the given frequency. Returns True if sent."""
-        if not frequency_hz or frequency_hz < 1 or frequency_hz > 65535:
-            logger.error("Invalid frequency: %d. Must be between 1-65535 Hz.", frequency_hz)
-            return False
-        return await self._send_or_remove(
-            session,
-            StreamStartPacket.create(frequency_hz=frequency_hz),
-            f"STREAM_START ({frequency_hz} Hz)",
-        )
-
-    async def stop_streaming(self, session: ESPDeviceSession) -> bool:
-        """Request the device to stop streaming data. Returns True if sent."""
-        return await self._send_or_remove(session, StreamStopPacket.create(), "STREAM_STOP command")
-
-    async def set_control(
-        self,
-        session: ESPDeviceSession,
-        control_name: str,
-        control_state: str,
-    ) -> bool:
-        """Request the device to set a control to a given state. Returns True if sent.
-
-        BOOL controls take OPEN or CLOSED; numeric controls take a number.
-        """
-        control_name = normalize_control_name(control_name)
-
-        if control_name not in session.controls:
-            logger.error("Invalid control name '%s'. Valid: %s", control_name, list(session.controls.keys()))
-            return False
-
-        control = session.controls[control_name]
+    async def _write_control(self, session: ESPDeviceSession, target: ControlBinding, value: ControlValue) -> int:
+        """Core callback: translate a typed value to QLCP and preserve its command ID."""
+        control = session.qlcp_config.controls_by_id[target.id]
         try:
-            state = cast_control_state(control.type, control_state)
-        except QLCPConfigError:
-            logger.error("Invalid state '%s' for %s control '%s'", control_state, control.type.name, control_name)
-            return False
-
-        return await self._send_or_remove(
-            session,
-            ControlPacket.create(control.id, control.type, control_state=state),
-            f"CONTROL command (id={control.id}, {control_name} {control_state})",
-        )
+            packet = ControlPacket.create(control.id, control.type, control_state=to_qlcp_state(target.type, value))
+        except ValueError as exc:
+            # The value is wrong, not the connection: refuse without touching the session.
+            logger.warning("Refused CONTROL for %s on %s: %s", target.name, session.name, exc)
+            raise ControlValidationError(str(exc)) from exc
+        if not session.is_connected:
+            self.remove_device(session)
+            raise ControlDispatchError("Device is disconnected")
+        try:
+            command = await self.send_tracked_command(session, packet)
+        except Exception:
+            logger.exception("Error sending CONTROL to %s", session.name)
+            self.remove_device(session)
+            raise
+        return command.command_id
 
     async def get_status(self, session: ESPDeviceSession) -> bool:
         """Request the device to report its current control states. Returns True if sent."""
@@ -515,7 +505,7 @@ class ESPConnectionRuntime:
                 expired.packet_type.name,
                 expired.packet_sequence,
             )
-            self._emit(self.system_state.record_command_timed_out(expired))
+            self.state_adapter.record_command(expired)
 
         return False
 
@@ -543,22 +533,16 @@ class ESPConnectionRuntime:
         if packet.ack_packet_type == PacketType.TIMESYNC_RESP:
             session.record_timesync_ack(command)
             if command is not None:
-                self._emit(self.system_state.record_command_acked(command))
+                self.state_adapter.record_command(command)
             logger.debug("%s TIMESYNC_RESP ACK seq=%d", session.name, packet.ack_sequence)
         elif packet.ack_packet_type == PacketType.HEARTBEAT:
             session.record_heartbeat_ack(command)
             if command is not None:
-                self._emit(self.system_state.record_command_acked(command))
+                self.state_adapter.record_command(command)
             logger.debug("%s HEARTBEAT ACK seq=%d", session.name, packet.ack_sequence)
-        elif packet.ack_packet_type == PacketType.CONTROL:
-            if command is not None:
-                self._emit(self.system_state.record_command_acked(command))
-                self._update_control_from_ack(session, command)
-            else:
-                logger.debug("%s ACK for CONTROL seq=%d", session.name, packet.ack_sequence)
         else:
             if command is not None:
-                self._emit(self.system_state.record_command_acked(command))
+                self.state_adapter.record_command(command)
             logger.debug("%s ACK for %s seq=%d", session.name, packet.ack_packet_type.name, packet.ack_sequence)
 
         return command
@@ -581,7 +565,7 @@ class ESPConnectionRuntime:
                 packet.error_code.name,
             )
         else:
-            self._emit(self.system_state.record_command_nacked(command))
+            self.state_adapter.record_command(command)
 
         logger.debug("%s NACK for %s error=%s", session.name, packet.nack_packet_type.name, packet.error_code.name)
         return command
@@ -602,16 +586,14 @@ class ESPConnectionRuntime:
                 now=time.monotonic(),
             )
             if command is not None:
-                self._emit(self.system_state.record_command_acked(command))
+                self.state_adapter.record_command(command)
 
         for control_state in packet.control_states:
-            self._emit(
-                self.system_state.record_reported_control_state(
-                    session,
-                    control_state.id,
-                    control_state.state,
-                    status=control_state.status,
-                ),
+            self.state_adapter.record_reported_control_state(
+                session,
+                control_state.id,
+                control_state.state,
+                status=control_state.status,
             )
 
     def cleanup_device(
@@ -643,14 +625,13 @@ class ESPConnectionRuntime:
             heartbeat_task.cancel()
             logger.info("Cancelled heartbeat task for %s", session.name)
 
-        self._publish_failed_command_events(
-            self.command_tracker.fail_connection(session.connection_key, reason=reason),
-        )
+        for failed in self.command_tracker.fail_connection(session.connection_key, reason=reason):
+            self.state_adapter.record_command(failed)
 
     def _teardown_session(self, session: ESPDeviceSession, *, reason: str) -> None:
         """Teardown a device session by cleaning it up and removing it from the registry."""
         self.cleanup_device(session, reason=reason)
-        self._emit(self.system_state.mark_disconnected(session))
+        self.state_adapter.mark_disconnected(session)
 
     def remove_device(self, session: ESPDeviceSession) -> None:
         """Remove a device session from the registry, clean it up, and emit a state event. If the session is not the current registered session for its address, it will be ignored."""
@@ -730,7 +711,7 @@ class ESPConnectionRuntime:
         """Handle a missed HEARTBEAT ACK for a device session, recording the miss and potentially removing the session if it exceeds the miss limit. Returns True if the session was removed, False otherwise."""
         self.metrics.record_heartbeat_miss(session.name)
         at_limit = session.register_missed_heartbeat()
-        self._emit(self.system_state.record_command_timed_out(command))
+        self.state_adapter.record_command(command)
 
         if not at_limit:
             logger.debug(
@@ -745,27 +726,6 @@ class ESPConnectionRuntime:
         logger.error("%s unresponsive: missed %s HEARTBEAT ACKs", session.name, session.missed_heartbeat_count)
         self.remove_device(session)
         return True
-
-    def _update_control_from_ack(self, session: ESPDeviceSession, command: CommandRecord) -> None:
-        """Update the system state with the control state change from a CONTROL ACK packet, if the command has a valid control ID and requested state. If either is None, log a debug message and return without updating the state."""
-        if command.control_id is None or command.requested_state is None:
-            logger.debug("%s ACK for CONTROL seq=%s", session.name, command.packet_sequence)
-            return
-
-        control_name = command.control_name or session.control_name_for_id(command.control_id)
-        if control_name is None:
-            return
-
-        self._emit(self.system_state.record_accepted_control_state(
-            session,
-            command.control_id,
-            command.requested_state,
-        ))
-
-    def _publish_failed_command_events(self, commands: list[CommandRecord]) -> None:
-        """Publish state events for commands that have failed due to connection closure or timeout."""
-        for command in commands:
-            self._emit(self.system_state.record_command_timed_out(command))
 
     async def run_tcp_listener(self, *, port: int = TCP_PORT, backlog: int = 5) -> None:
         """Bind the TCP server socket and accept device connections until cancelled."""

@@ -44,9 +44,9 @@ recordings/
     video/...
 ```
 
-The [CSV writer](../src/vector/runtime/session_telemetry.py) writes one row per telemetry batch, with a device source and timestamp. Sensor columns are keyed by name. It samples the latest reported control and Kasa states into each row; this is not an event-by-event command log.
+The [CSV writer](../src/vector/runtime/session_telemetry.py) writes one row per telemetry batch, with a source label and timestamp. Sensor columns are keyed by name. It samples the latest reported state of every control, a plug's `power` included, into each row; this is not an event-by-event command log. The final `source_provider` and `source_key` columns identify the producer even when labels repeat or change. These columns are appended so existing column positions stay the same; parse CSV by header and honor quoted fields.
 
-Columns remain fixed once rows have been written. `SystemState` retains disconnected device descriptions, so an ordinary reconnect can reuse the original columns. If a batch introduces sensor names absent from that layout, its device gets a `telemetry_late*.csv` side file. Before the first row, the writer can instead rebuild the header. These rules preserve readings without rewriting an existing recording.
+Columns remain fixed once rows have been written. The core retains disconnected source descriptions and `SystemState` presents their recording schema, so an ordinary reconnect can reuse the original columns. If a batch introduces sensor names absent from that layout, its source gets a `telemetry_late*.csv` side file. Late files are grouped by provider/key and reused only if their columns cover the batch; a reconnect that adds sensors can create another file. Every file stays in the session archive. Before the first row, the writer can instead rebuild the header. These rules preserve readings without rewriting an existing recording.
 
 Writes use a large buffer, flushed roughly once a second; closing also calls `fsync`. That reduces per-batch overhead on the shared event loop. Filesystem stalls can still affect ingest, and periodic flushing is not a guarantee against power-loss data loss.
 
@@ -92,7 +92,7 @@ Telemetry uses server-monotonic seconds; video filenames use MediaMTX's wall clo
 
 CSV sensor values are tared and rounded to four decimal places. An empty sensor cell means that sensor was absent from the batch. Unlike the raw WebSocket, CSV does not include each reading's tare, so a mid-session tare change cannot be reconstructed from start/end offsets alone.
 
-Control columns use the declared group and name. The writer encodes a boolean in group `valve` as `1` for `OPEN`; other boolean groups use `1` for `CLOSED`. Numeric controls retain their reported value. This is a CSV convention tied to group names, so a newly introduced group needs deliberate handling. The layout follows the earlier GUI recorder for analysis compatibility, with numeric controls added explicitly.
+Control columns are named `<source>_<group>_<name>`, where the source is the producer's display label sanitized to letters, digits and underscores, with a numeric suffix if two sources share a label. The writer encodes a boolean in group `relay` as `1` for `CLOSED`, the energized state of a normally-closed relay; every other boolean group, such as `solenoid` or a plug's `power`, uses `1` for `OPEN`/true. Numeric controls retain their reported value. This is a CSV convention tied to the `relay` group name. The layout follows the earlier GUI recorder for analysis compatibility, with numeric controls added explicitly.
 
 ## Audio and older integrations
 
@@ -100,7 +100,7 @@ Control columns use the declared group and name. The writer encodes a boolean in
 
 Mumble is not currently used for operations communications. Its recording integration remains available, so a session may have no audio even when telemetry and video are present.
 
-[KasaRuntime](../src/vector/runtime/kasa_runtime.py) is a legacy smart-outlet integration for tank heaters. The run-tank heater now uses a Control Node with a local PID loop. Kasa discovery, API routes, state, and CSV columns remain available, but this path is outside QLCP command tracking and ESTOP.
+[KasaRuntime](../src/vector/runtime/kasa_runtime.py) is a legacy smart-outlet integration for tank heaters. The run-tank heater now uses a Control Node with a local PID loop. A plug is an ordinary source: discovered with nodes, polled for liveness, commanded through `/v1/control`, shown in the `devices` list, and recorded as a `<alias>_power` control column. Nothing about it is special except that it is outside QLCP command tracking and ESTOP.
 
 ## Changing this subsystem
 

@@ -6,10 +6,11 @@ from typing import Any, cast
 import orjson
 from fastapi import WebSocket
 
-from vector.runtime.command_tracker import CommandTracker
+from tests.unit.test_system_state import _make_device
+from tests.unit.test_system_state import _make_state as _state_fixture
+from vector.core import ControlDefinition
 from vector.runtime.state_stream import STATE_STREAM_MAX_QUEUE, StateStream
 from vector.state.system_state import SystemState
-from tests.unit.test_system_state import _make_device
 
 
 class FakeWebSocket:
@@ -44,7 +45,8 @@ def _as_websocket(websocket: FakeWebSocket) -> WebSocket:
 
 
 def _make_state() -> SystemState:
-    return SystemState(command_tracker=CommandTracker())
+    state, _, _, _ = _state_fixture()
+    return state
 
 
 async def _wait_for(condition: Any, *, timeout: float = 1.0, tick: float = 0.01) -> bool:
@@ -63,8 +65,8 @@ async def _wait_for(condition: Any, *, timeout: float = 1.0, tick: float = 0.01)
 
 def test_connect_client_sends_initial_snapshot() -> None:
     async def run() -> None:
-        state = _make_state()
-        state.register_device(_make_device())
+        state, _, qlcp, _ = _state_fixture()
+        qlcp.register_device(_make_device())
         stream = StateStream(state)
         websocket = FakeWebSocket()
 
@@ -101,8 +103,8 @@ def test_connect_client_increments_count() -> None:
 def test_publish_events_are_ordered_after_snapshot() -> None:
 
     async def run() -> None:
-        state = _make_state()
-        state.register_device(_make_device())
+        state, _, qlcp, _ = _state_fixture()
+        qlcp.register_device(_make_device())
         stream = StateStream(state)
         ws = FakeWebSocket()
 
@@ -138,6 +140,39 @@ def test_publish_none_is_ignored() -> None:
 
         stream.publish(None)
         assert stream.client_count == 1
+
+    asyncio.run(run())
+
+
+def test_same_label_sources_remain_distinct_in_serialized_snapshot_and_updates() -> None:
+    async def run() -> None:
+        state = _make_state()
+        sources = [
+            state.core.register_source(provider, "sensor", name="Shared label", controls=[ControlDefinition("VALVE")])
+            for provider in ("a", "b")
+        ]
+        stream = StateStream(state)
+        state.set_publisher(stream.publish)
+        ws = FakeWebSocket()
+        client_task = asyncio.create_task(stream.handle_client(_as_websocket(ws)))
+        try:
+            assert await _wait_for(lambda: len(ws.sent) == 1)
+            sources[0].report_control("VALVE", False)
+            sources[1].report_control("VALVE", True)
+            assert await _wait_for(lambda: len(ws.sent) == 3)
+
+            devices = ws.sent[0]["state"]["devices"]
+            assert [(device["source_provider"], device["source_key"]) for device in devices] == [("a", "sensor"), ("b", "sensor")]
+            assert [device["name"] for device in devices] == ["Shared label", "Shared label"]
+            updates = ws.sent[1:]
+            assert [event["source_provider"] for event in updates] == ["a", "b"]
+            assert [event["source_key"] for event in updates] == ["sensor", "sensor"]
+            assert [event["connection_key"] for event in updates] == [source.connection_key for source in sources]
+            assert [event["control"]["reported_state"] for event in updates] == ["CLOSED", "OPEN"]
+        finally:
+            client_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await client_task
 
     asyncio.run(run())
 
@@ -286,9 +321,9 @@ def test_send_failure_removes_broken_client() -> None:
 
 def test_snapshot_message_reflects_current_state() -> None:
     async def run() -> None:
-        state = _make_state()
+        state, _, qlcp, _ = _state_fixture()
         device = _make_device()
-        state.register_device(device)
+        qlcp.register_device(device)
         stream = StateStream(state)
 
         msg = stream.snapshot_message()

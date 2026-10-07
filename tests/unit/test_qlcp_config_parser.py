@@ -1,6 +1,6 @@
 import pytest
 
-from vector.qlcp.config_models import SensorConfig
+from vector.qlcp.config_models import DeviceConfig, SensorConfig
 from vector.qlcp.config_parser import QLCPConfigError, parse_config
 from vector.qlcp.enums import ControlState, ControlType
 
@@ -315,4 +315,25 @@ def test_parse_config_missing_sensor_field_raises(missing_field: str) -> None:
         QLCPConfigError,
         match=f"thermocouple sensor 'TC1' missing required field: {missing_field}",
     ):
+        parse_config(config)
+
+
+@pytest.mark.parametrize("ids", [(1,), (0, 2)], ids=["not-from-zero", "gap"])
+def test_device_config_rejects_ids_that_are_not_declaration_ordinals(ids: tuple[int, ...]) -> None:
+    sensors = {i: SensorConfig(id=i, name=f"S{i}", group="pressure", unit="psi") for i in ids}
+    with pytest.raises(ValueError, match="contiguous"):
+        DeviceConfig(name="PANDA", sensors_by_id=sensors, controls_by_id={})
+    with pytest.raises(ValueError, match="contiguous"):
+        DeviceConfig(name="PANDA", sensors_by_id={0: SensorConfig(id=1, name="S", group="pressure", unit="psi")}, controls_by_id={})
+
+
+def test_parse_config_rejects_repeated_control_names_ignoring_case() -> None:
+    config = {
+        "device_name": "PANDA",
+        "controls": {
+            "valve": {"AV101": {"type": "BOOL", "default_state": "CLOSED"}},
+            "relay": {"av101": {"type": "BOOL", "default_state": "CLOSED"}},
+        },
+    }
+    with pytest.raises(ValueError, match="AV101"):
         parse_config(config)

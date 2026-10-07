@@ -9,18 +9,8 @@ import pytest
 from vector.config import MumbleConfig
 from vector.runtime.audio_runtime import AudioRuntime
 from vector.runtime.camera_runtime import CameraRuntime
-from vector.runtime.command_tracker import CommandTracker
-from vector.runtime.kasa_runtime import KasaRuntime
 from vector.runtime.recording_paths import RecordingPaths
-from vector.runtime.state_stream import StateStream
-from vector.state.system_state import SystemState
 
-
-def _make_kasa_runtime() -> KasaRuntime:
-    tracker = CommandTracker()
-    system_state = SystemState(command_tracker=tracker)
-    state_stream = StateStream(system_state)
-    return KasaRuntime(system_state=system_state, state_stream=state_stream)
 
 
 # ---------------------------------------------------------------------------
@@ -176,29 +166,3 @@ def test_settle_video_times_out_while_a_file_keeps_growing(tmp_path: Path) -> No
             await asyncio.gather(writer, return_exceptions=True)
 
     assert asyncio.run(run()) is False
-
-
-# ---------------------------------------------------------------------------
-# KasaRuntime
-# ---------------------------------------------------------------------------
-
-
-def test_kasa_get_device_returns_none_for_unknown_host() -> None:
-    runtime = _make_kasa_runtime()
-    assert runtime.get_device("192.168.1.99") is None
-
-
-def test_kasa_require_device_raises_key_error() -> None:
-    runtime = _make_kasa_runtime()
-    with pytest.raises(KeyError, match="No Kasa device found"):
-        runtime._require_device("192.168.1.99")  # type: ignore[attr-defined]
-
-
-def test_kasa_set_device_state_raises_key_error_for_unknown_host() -> None:
-
-    async def run() -> None:
-        runtime = _make_kasa_runtime()
-        with pytest.raises(KeyError):
-            await runtime.set_state("192.168.1.99", True)
-
-    asyncio.run(run())

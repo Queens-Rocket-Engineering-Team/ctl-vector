@@ -6,14 +6,19 @@ from typing import TYPE_CHECKING
 
 import aioconsole
 
-from vector.runtime.telemetry_ingest import (
+from vector.core import (
     TARE_DEFAULT_SAMPLES,
     TARE_SAMPLE_CAPACITY,
+    ControlDispatchError,
+    ControlType,
+    ControlValidationError,
     TareCaptureError,
 )
+from vector.runtime.qlcp_state import StreamSetting
 
 
 if TYPE_CHECKING:
+    from vector.core import ControlValue, Source
     from vector.runtime.esp_connection_runtime import ESPDeviceSession
     from vector.runtime.services import RuntimeServices
 
@@ -28,6 +33,48 @@ def _find_device(devices: dict[str, ESPDeviceSession], name: str) -> ESPDeviceSe
     return None
 
 
+def _find_source(runtime: RuntimeServices, name: str) -> Source | None:
+    """Resolve ``provider:key`` exactly, or a bare name as a QLCP device ignoring case."""
+    provider, _, key = name.partition(":")
+    if key:
+        return runtime.core.source(provider, key)
+    return next((source for source in runtime.core.sources("qlcp") if source.key.lower() == name.lower()), None)
+
+
+_BOOL_WORDS = {"OPEN": True, "ON": True, "TRUE": True, "CLOSED": False, "OFF": False, "FALSE": False}
+
+
+def _parse_control_value(control_type: ControlType, text: str) -> ControlValue:
+    """Operator spelling to the typed value the core expects."""
+    if control_type is ControlType.BOOL:
+        if text.upper() not in _BOOL_WORDS:
+            message = f"{text!r} is not OPEN/CLOSED, ON/OFF, or TRUE/FALSE"
+            raise ValueError(message)
+        return _BOOL_WORDS[text.upper()]
+    return float(text) if control_type is ControlType.FLOAT32 else int(text)
+
+
+async def _handle_control_command(runtime: RuntimeServices, source_name: str, control_name: str, text: str) -> None:
+    """Dispatch one control through the core; ``open`` and ``close`` arrive here with OPEN/CLOSED."""
+    source = _find_source(runtime, source_name)
+    target = source.control(control_name) if source is not None else None
+    if source is None or target is None:
+        logger.info(f"No control '{control_name}' on '{source_name}'. Use 'list' to see sources.")
+        return
+    try:
+        value = _parse_control_value(target.type, text)
+    except ValueError as exc:
+        logger.info(f"Invalid value for {target.type.name} control '{target.name}': {exc}")
+        return
+    address = f"{source.provider}:{source.key}"
+    try:
+        await runtime.core.set_control(target, value)
+    except (ControlValidationError, ControlDispatchError) as exc:
+        logger.info(f"Control {target.name} on {address} was not submitted: {exc}")
+        return
+    logger.info(f"Sent {value!r} to {target.name} on {address}")
+
+
 SERVER_COMMANDS = [
     "QUIT",
     "EXIT",
@@ -40,12 +87,12 @@ SERVER_COMMANDS = [
     "REMOVE",
     "ESTOP",
     "TARE",
+    "STREAM",
+    "STOP",
 ]
 
 DEVICE_COMMANDS = [
     "GETS",
-    "STREAM",
-    "STOP",
     "CONTROL",
     "OPEN",
     "CLOSE",
@@ -56,7 +103,7 @@ DEVICE_COMMANDS = [
 async def _handle_tare_command(runtime: RuntimeServices, args: list) -> None:
     """Handle `tare`, `tare <sensor> [samples]`, and `tare <sensor> clear`."""
     if not args:
-        tares = runtime.system_state.tares()
+        tares = runtime.core.tares()
         if not tares:
             logger.info("No sensors are tared.")
             logger.info("  Try: tare <sensor_name>")
@@ -69,11 +116,9 @@ async def _handle_tare_command(runtime: RuntimeServices, args: list) -> None:
     sensor_name = args[0]
 
     if len(args) > 1 and args[1].lower() in ("clear", "reset", "off"):
-        event = runtime.system_state.clear_tare(sensor_name)
-        if event is None:
+        if not runtime.core.clear_tare(sensor_name):
             logger.info(f"Sensor '{sensor_name}' is not tared")
             return
-        runtime.state_stream.publish(event)
         logger.info(f"Cleared tare for '{sensor_name}'")
         return
 
@@ -89,12 +134,12 @@ async def _handle_tare_command(runtime: RuntimeServices, args: list) -> None:
             return
 
     try:
-        offset, device_name, count = runtime.telemetry_runtime.capture_tare_offset(sensor_name, samples=samples)
+        offset, device_name, count = runtime.core.capture_tare_offset(sensor_name, samples=samples)
     except TareCaptureError as exc:
         logger.info(str(exc))
         return
 
-    runtime.state_stream.publish(runtime.system_state.set_tare(sensor_name, offset))
+    runtime.core.set_tare(sensor_name, offset)
     logger.info(f"Tared '{sensor_name}' to {offset} from {count} readings on {device_name}")
 
 
@@ -146,15 +191,16 @@ async def handle_server_command(runtime: RuntimeServices, command: str, args: li
         else:
             logger.info("Usage: autodiscovery <on|off|interval <seconds>|status>")
     elif cmd == "LIST":
-        devices = runtime.esp_runtime.get_registered_devices()
-        if not devices:
-            logger.info("No devices connected.")
+        sources = runtime.core.sources()
+        if not sources:
+            logger.info("No sources registered.")
             logger.info("  Try: discover")
         else:
-            logger.info(f"Connected devices ({len(devices)}):")
-            for registered_device in devices.values():
-                logger.info(f"  {registered_device.name} - {registered_device.address}")
-                logger.info(f"    Sensors: {len(registered_device.sensors)}, Controls: {len(registered_device.controls)}")
+            logger.info(f"Sources ({len(sources)}):")
+            for source in sources:
+                state = "connected" if source.connected else "disconnected"
+                logger.info(f"  {source.provider}:{source.key} - {source.name} {source.address} ({state})")
+                logger.info(f"    Sensors: {len(source.sensors)}, Controls: {len(source.controls)}")
     elif cmd == "REMOVE":
         if not args:
             logger.info("Usage: remove <device_name>")
@@ -186,6 +232,20 @@ async def handle_server_command(runtime: RuntimeServices, command: str, args: li
             logger.info(f"    [{idx}] {name}")
     elif cmd == "TARE":
         await _handle_tare_command(runtime, args)
+    elif cmd in ("STREAM", "STOP"):
+        current = runtime.esp_runtime.state_adapter.stream
+        if cmd == "STOP":
+            setting = StreamSetting(enabled=False, frequency_hz=current.frequency_hz)
+        else:
+            try:
+                frequency_hz = int(args[0])
+            except (IndexError, ValueError):
+                logger.info("Usage: stream <frequency_hz>")
+                return
+            setting = StreamSetting(enabled=True, frequency_hz=frequency_hz)
+        applied_to = await runtime.esp_runtime.set_stream(setting)
+        state = f"streaming at {setting.frequency_hz} Hz" if setting.enabled else "not streaming"
+        logger.info(f"Nodes are {state}; applied to {', '.join(applied_to) or 'no connected nodes'}")
     elif cmd == "HELP":
         logger.info("Available commands:")
         logger.info("  discover           - Discover devices")
@@ -193,12 +253,13 @@ async def handle_server_command(runtime: RuntimeServices, command: str, args: li
         logger.info("  autodiscovery on   - Enable periodic discovery")
         logger.info("  autodiscovery off  - Disable periodic discovery")
         logger.info("  autodiscovery interval <seconds> - Set discovery interval")
-        logger.info("  list               - Show connected devices")
+        logger.info("  list               - Show registered sources as provider:key")
         logger.info("  info <device>      - Show device details")
-        logger.info("  stream <dev> <hz>  - Start streaming")
-        logger.info("  stop <device>      - Stop streaming")
-        logger.info("  open <dev> <ctrl>  - Open valve/control")
-        logger.info("  close <dev> <ctrl> - Close valve/control")
+        logger.info("  stream <hz>        - Stream every node at <hz>, including nodes that connect later")
+        logger.info("  stop               - Stop streaming on every node")
+        logger.info("  control <src> <ctrl> <value> - Set a control; src is a device name or provider:key")
+        logger.info("  open <src> <ctrl>  - Open valve/control")
+        logger.info("  close <src> <ctrl> - Close valve/control")
         logger.info("  status <device>    - Get device status / control states")
         logger.info("  tare               - Show applied sensor tares")
         logger.info("  tare <sensor> [n]  - Zero a sensor using its last n readings")
@@ -216,6 +277,16 @@ async def handle_device_command(runtime: RuntimeServices, command: str, args: li
         logger.info(f"Usage: {command.lower()} <device_name> [args...]")
         return
 
+    cmd = command.upper()
+    if cmd in ("CONTROL", "OPEN", "CLOSE"):
+        if cmd != "CONTROL":
+            args = [*args[:2], "OPEN" if cmd == "OPEN" else "CLOSED"]
+        if len(args) < 3:
+            logger.info("Usage: control <source> <control> <OPEN|CLOSED|value>, open <source> <control>, close <source> <control>")
+            return
+        await _handle_control_command(runtime, args[0], args[1], args[2])
+        return
+
     device_name = args[0]
     devices = runtime.esp_runtime.get_registered_devices()
     device = _find_device(devices, device_name)
@@ -224,39 +295,10 @@ async def handle_device_command(runtime: RuntimeServices, command: str, args: li
         logger.info(f"Device '{device_name}' not found. Use 'list' to see devices.")
         return
 
-    cmd = command.upper()
     try:
         if cmd == "GETS":
             await runtime.esp_runtime.get_single(device)
             logger.info(f"Requested data from {device.name}")
-        elif cmd == "STREAM":
-            if len(args) < 2:
-                logger.info("Usage: stream <device> <frequency_hz>")
-                return
-            freq = int(args[1])
-            await runtime.esp_runtime.start_streaming(device, freq)
-            logger.info(f"Streaming from {device.name} at {freq} Hz")
-        elif cmd == "STOP":
-            await runtime.esp_runtime.stop_streaming(device)
-            logger.info(f"Stopped streaming from {device.name}")
-        elif cmd == "CONTROL":
-            if len(args) < 3:
-                logger.info("Usage: control <device> <name> <OPEN|CLOSED|value>")
-                return
-            await runtime.esp_runtime.set_control(device, args[1], args[2])
-            logger.info(f"Sent {args[2]} to {args[1]} on {device.name}")
-        elif cmd == "OPEN":
-            if len(args) < 2:
-                logger.info("Usage: open <device> <control_name>")
-                return
-            await runtime.esp_runtime.set_control(device, args[1], "OPEN")
-            logger.info(f"Opened {args[1]} on {device.name}")
-        elif cmd == "CLOSE":
-            if len(args) < 2:
-                logger.info("Usage: close <device> <control_name>")
-                return
-            await runtime.esp_runtime.set_control(device, args[1], "CLOSED")
-            logger.info(f"Closed {args[1]} on {device.name}")
         elif cmd == "STATUS":
             await runtime.esp_runtime.get_status(device)
             logger.info(f"Requested status from {device.name}")

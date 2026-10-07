@@ -16,15 +16,17 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from tests.mock_device import MockSensorDevice
+from vector.core import Core
 from vector.runtime.command_tracker import CommandTracker
 from vector.runtime.esp_connection_runtime import ESPConnectionRuntime
+from vector.runtime.qlcp_state import StreamSetting
 from vector.runtime.recording_paths import RecordingPaths
 from vector.runtime.session_archive import iter_session_zip
 from vector.runtime.session_runtime import SessionRuntime
 from vector.runtime.session_telemetry import TelemetrySessionPublisher
 from vector.runtime.telemetry_ingest import TelemetryRuntime
 from vector.state.system_state import SystemState
-from tests.mock_device import MockSensorDevice
 
 
 if TYPE_CHECKING:
@@ -86,16 +88,17 @@ async def _harness(root: Path) -> AsyncGenerator[tuple[ESPConnectionRuntime, Sys
     tcp_port = _free_port(socket.SOCK_STREAM)
     udp_port = _free_port(socket.SOCK_DGRAM)
 
-    state = SystemState(command_tracker=CommandTracker())
+    state = SystemState(core=Core())
     stream = _FakeStateStream()
-    esp_runtime = ESPConnectionRuntime(command_tracker=CommandTracker(), system_state=state, state_stream=stream)  # type: ignore[arg-type]
+    state.set_publisher(stream.publish)  # type: ignore[arg-type]
+    esp_runtime = ESPConnectionRuntime(command_tracker=CommandTracker(), system_state=state)
     publisher = TelemetrySessionPublisher()
-    telemetry_runtime = TelemetryRuntime(esp_runtime.get_device_by_address, publisher, tare_for=state.tare_for)
+    telemetry_runtime = TelemetryRuntime(esp_runtime.get_device_by_address)
+    state.core.subscribe_samples(publisher.publish_batch)
     session_runtime = SessionRuntime(
         paths=RecordingPaths.from_config({"root": str(root), "mediamtx_container_root": "/recordings"}),
         telemetry_publisher=publisher,
         system_state=state,
-        state_stream=stream,  # type: ignore[arg-type]
         camera_runtime=_NoCameras(),  # type: ignore[arg-type]
         audio_runtime=_UnreachableAudio(),  # type: ignore[arg-type]
     )
@@ -139,19 +142,19 @@ def test_session_records_telemetry_metadata_and_a_downloadable_archive(tmp_path:
             status = await session_runtime.start("Hot Fire 3")
             session_id = status["id"]
 
-            await esp_runtime.start_streaming(session, 100)
+            await esp_runtime.set_stream(StreamSetting(enabled=True, frequency_hz=100))
             assert await _wait_for(lambda: session_runtime.read_metadata(session_id)["telemetry"]["rows"] > 5)
 
             # Flip a valve mid-recording; the column must follow.
             device.control_handled.clear()
-            await esp_runtime.set_control(session, "AV101", "CLOSED")
+            await state.core.set_control(session.core_source.control("AV101"), False)
             await asyncio.wait_for(device.control_handled.wait(), timeout=3.0)
-            assert await _wait_for(lambda: state.control_states().get("AV101") == "CLOSED")
+            assert await _wait_for(lambda: state.control_states().get(("qlcp", device.device_name, "AV101")) == "CLOSED")
 
             rows_at_flip = session_runtime.read_metadata(session_id)["telemetry"]["rows"]
             assert await _wait_for(lambda: session_runtime.read_metadata(session_id)["telemetry"]["rows"] > rows_at_flip + 5)
 
-            await esp_runtime.stop_streaming(session)
+            await esp_runtime.set_stream(StreamSetting(enabled=False, frequency_hz=100))
             metadata = await session_runtime.stop()
 
         session_dir = tmp_path / session_id
@@ -161,12 +164,16 @@ def test_session_records_telemetry_metadata_and_a_downloadable_archive(tmp_path:
         # Columns come from the device's declared QLCP groups, and the analog heater is
         # a real column rather than a boolean that could only ever read 0.
         assert header[:2] == ["device_timestamp", "source"]
+        assert header[-2:] == ["source_provider", "source_key"]
+        assert all(line.split(",")[-2:] == ["qlcp", device.device_name] for line in lines[1:])
+        assert metadata["telemetry"]["columns"][-2:] == ["source_provider", "source_key"]
         assert "PT101 [PSI]" in header
-        assert "heater_HEATER1" in header
-        assert "relay_SAFE24" in header
-        assert "valve_AV101" in header
+        prefix = device.device_name
+        assert f"{prefix}_heater_HEATER1" in header
+        assert f"{prefix}_relay_SAFE24" in header
+        assert f"{prefix}_valve_AV101" in header
 
-        valve_index = header.index("valve_AV101")
+        valve_index = header.index(f"{prefix}_valve_AV101")
         valve_column = [line.split(",")[valve_index] for line in lines[1:]]
         # AV101 defaults to OPEN (1 for a valve) and is commanded CLOSED (0) mid-run.
         assert valve_column[0] == "1"

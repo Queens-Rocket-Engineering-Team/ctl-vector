@@ -2,29 +2,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import socket
+from collections.abc import Callable
+from types import SimpleNamespace
+from typing import cast
 
-from vector.runtime.telemetry_ingest import (
-    TelemetryBatch,
-    TelemetryRuntime,
-)
-
-
-class FakeIngest:
-    def __init__(self, batch: TelemetryBatch | None) -> None:
-        self._batch = batch
-        self.seen: list[tuple[bytes, str]] = []
-
-    def handle_datagram(self, data: bytes, address: str) -> TelemetryBatch | None:
-        self.seen.append((data, address))
-        return self._batch
-
-
-class FakePublisher:
-    def __init__(self) -> None:
-        self.batches: list[TelemetryBatch] = []
-
-    def publish_batch(self, batch: TelemetryBatch) -> None:
-        self.batches.append(batch)
+from vector.core import Core, SensorDefinition, TelemetryBatch
+from vector.qlcp.config_parser import parse_config
+from vector.qlcp.packets import DataPacket, PacketHeader, SensorReading
+from vector.runtime.esp_connection_runtime import ESPDeviceSession
+from vector.runtime.telemetry_ingest import TelemetryRuntime
 
 
 def _free_udp_port() -> int:
@@ -36,25 +22,33 @@ def _free_udp_port() -> int:
         probe.close()
 
 
-def _make_batch() -> TelemetryBatch:
-    return TelemetryBatch(
-        device_name="MockDevice",
-        device_address="127.0.0.1",
-        connection_key="esp-1",
-        timestamp_s=1.0,
-        readings=(),
-        timestamp_source="device_synced",
-        timestamp_synced=True,
+def _listener() -> tuple[TelemetryRuntime, list[TelemetryBatch]]:
+    core = Core()
+    source = core.register_source(
+        "qlcp", "MockDevice", address="127.0.0.1", connection_key="esp-1",
+        sensors=(SensorDefinition("PT101", "pressure_transducer", "PSI"),),
     )
+    config = parse_config({
+        "device_name": "MockDevice",
+        "sensors": {"pressure_transducer": {"PT101": {"unit": "PSI"}}},
+        "controls": {},
+    })
+    session = cast("ESPDeviceSession", SimpleNamespace(
+        name="MockDevice", address="127.0.0.1", connection_key="esp-1",
+        qlcp_config=config, last_sync_time=1.0, core_source=source,
+    ))
+    batches: list[TelemetryBatch] = []
+    core.subscribe_samples(batches.append)
+    return TelemetryRuntime({session.address: session}.get), batches
 
 
-async def _drive(listener: TelemetryRuntime, port: int, stop) -> None:
-    """Run the listener while a sender pushes datagrams until ``stop()`` is true (or timeout)."""
+async def _drive(listener: TelemetryRuntime, port: int, data: bytes, stop: Callable[[], bool]) -> None:
+    """Send until the listener has processed a datagram, with a bounded timeout."""
     task = asyncio.create_task(listener.run_udp_listener(port=port))
     sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        for _ in range(200):  # up to ~4s; tolerates the socket not yet being bound
-            sender.sendto(b"datagram", ("127.0.0.1", port))
+        for _ in range(200):
+            sender.sendto(data, ("127.0.0.1", port))
             await asyncio.sleep(0.02)
             if stop():
                 break
@@ -65,36 +59,37 @@ async def _drive(listener: TelemetryRuntime, port: int, stop) -> None:
             await task
 
 
-def test_listener_publishes_decoded_batches() -> None:
+def test_listener_publishes_decoded_batches_once() -> None:
     async def run() -> None:
-        port = _free_udp_port()
-        batch = _make_batch()
-        ingest = FakeIngest(batch)
-        publisher = FakePublisher()
-        listener = TelemetryRuntime(lambda _address: None, publisher)
-        listener.handle_datagram = ingest.handle_datagram  # type: ignore[method-assign]
+        listener, batches = _listener()
+        packet = DataPacket(
+            header=PacketHeader(sequence=1, timestamp_us=1000000),
+            readings=[SensorReading(sensor_id=0, value=12.5)],
+        )
+        await _drive(listener, _free_udp_port(), packet.encode(), stop=lambda: bool(batches))
 
-        await _drive(listener, port, stop=lambda: bool(publisher.batches))
-
-        assert publisher.batches, "listener never published a decoded batch"
-        assert publisher.batches[0] is batch
-        assert ingest.seen[0][1] == "127.0.0.1"
+        assert len(batches) == 1
+        assert batches[0].source_name == "MockDevice"
+        assert batches[0].source_address == "127.0.0.1"
+        assert batches[0].readings[0].value == 12.5
 
     asyncio.run(run())
 
 
 def test_listener_skips_publish_when_ingest_returns_none() -> None:
     async def run() -> None:
-        port = _free_udp_port()
-        ingest = FakeIngest(None)
-        publisher = FakePublisher()
-        listener = TelemetryRuntime(lambda _address: None, publisher)
-        listener.handle_datagram = ingest.handle_datagram  # type: ignore[method-assign]
+        listener, batches = _listener()
+        received: list[str] = []
+        handle_datagram = listener.handle_datagram
 
-        # Drive until at least one datagram is received, then confirm nothing was published.
-        await _drive(listener, port, stop=lambda: bool(ingest.seen))
+        def ingest(data: bytes, address: str) -> TelemetryBatch | None:
+            received.append(address)
+            return handle_datagram(data, address)
 
-        assert ingest.seen, "listener never received a datagram"
-        assert publisher.batches == []
+        listener.handle_datagram = ingest
+        await _drive(listener, _free_udp_port(), b"invalid packet", stop=lambda: bool(received))
+
+        assert received == ["127.0.0.1"]
+        assert batches == []
 
     asyncio.run(run())

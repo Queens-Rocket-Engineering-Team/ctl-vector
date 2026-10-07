@@ -6,7 +6,7 @@ from vector.runtime.ws_fanout import BoundedWebSocketFanout
 
 
 if TYPE_CHECKING:
-    from vector.runtime.telemetry_ingest import TelemetryBatch
+    from vector.core import TelemetryBatch
 
 
 STREAM_METRIC_LABEL = "telemetry_raw"
@@ -31,8 +31,10 @@ class TelemetryStreamRuntime(BoundedWebSocketFanout):
     def serialize_batch(self, batch: TelemetryBatch) -> dict[str, Any]:
         return {
             "type": "telemetry.raw_batch",
-            "device_name": batch.device_name,
-            "device_address": batch.device_address,
+            "source_provider": batch.source_provider,
+            "source_key": batch.source_key,
+            "device_name": batch.source_name,
+            "device_address": batch.source_address,
             "connection_key": batch.connection_key,
             "timestamp_s": batch.timestamp_s,
             "timestamp_source": batch.timestamp_source,
@@ -45,8 +47,8 @@ class TelemetryStreamRuntime(BoundedWebSocketFanout):
                     # Server-applied tare offset. The untared reading is `value + tare`,
                     # so recordings taken from this stream stay reversible.
                     "tare": reading.tare,
-                    "unit": reading.unit_name,
-                    "sensor_type": reading.sensor_type,
+                    "unit": reading.unit,
+                    "sensor_type": reading.group,
                 }
                 for reading in batch.readings
             ],

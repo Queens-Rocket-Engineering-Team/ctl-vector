@@ -23,7 +23,13 @@ Desktop HELM owns the acquisition policy: it requests preview readings outside r
 
 ## Requests and streams
 
-REST routes validate input and call the appropriate runtime. The main groups are [devices and commands](../src/vector/api/routers/devices.py), [tares](../src/vector/api/routers/tares.py), [sessions](../src/vector/api/routers/sessions.py), [cameras](../src/vector/api/routers/cameras.py), and [Kasa outlets](../src/vector/api/routers/kasa.py). FastAPI's `/docs` page describes their request parameters. Some POST routes use query parameters, so consult the route rather than assuming every request takes JSON.
+REST routes validate input and call the appropriate runtime. The main groups are [controls](../src/vector/api/routers/controls.py), [devices and commands](../src/vector/api/routers/devices.py), [tares](../src/vector/api/routers/tares.py), [sessions](../src/vector/api/routers/sessions.py), and [cameras](../src/vector/api/routers/cameras.py). FastAPI's `/docs` page describes their request parameters. Some POST routes use query parameters, so consult the route rather than assuming every request takes JSON.
+
+`POST /v1/control` sets one control on one source through the [shared core](CORE.md), for QLCP nodes and Kasa plugs alike. The JSON body names the source as `<source_provider>:<source_key>`, copied from the state snapshot, the control by name, and a value matching the control's declared type: `true` or `false` for BOOL, an integer for UINT32 and INT32, a finite number for FLOAT32. A value the control cannot take is 400, an unknown target is 404, a disconnected source is 409, and a failed send is 502. The response reports `submitted` and, for QLCP, the tracker `command_id`. There is no fan-out by name: a client that wants the same control on several nodes sends one request per node. A Kasa plug is addressed as `kasa:<host>` with control `power`; there is no separate Kasa route.
+
+`POST /v1/discover` starts discovery on every provider at once: a QLCP multicast request, and a Kasa scan in the background. The periodic loop under `/v1/autodiscovery` does the same on its interval, so a plug that was closed after failing its polls is picked up again when it answers. A discovered plug is an ordinary entry in the snapshot's `devices` list, with its alias as `name`, its host as `source_key` and `address`, no sensors, one BOOL control named `power`, and a heartbeat driven by the server's polling. It publishes the same `device.*` and `control.*` events as a node.
+
+`POST /v1/stream` sets the DATA stream rate for the whole stand as declared state: `{"enabled": true, "frequency_hz": 190}`, either field optional. VECTOR applies it to every connected node immediately and to each node as it registers, so a node that reconnects resumes streaming without client action. The response lists the nodes reached. `GET /v1/stream` reads the setting, the state snapshot carries it as `stream`, and a change publishes `stream.updated`.
 
 The [WebSocket routes](../src/vector/api/routers/streams.py) delegate each connection to a stream runtime:
 
@@ -40,23 +46,25 @@ Video has a separate path: VECTOR supplies camera metadata and configures MediaM
 
 ## State snapshots and events
 
-[SystemState](../src/vector/state/system_state.py) assembles the client-facing state. It projects devices, reported controls, command history, Kasa state, and recording status from their runtime owners. Tare offsets are its own authoritative data. Telemetry readings flow separately; the state snapshot is not a sensor-history store.
+[SystemState](../src/vector/state/system_state.py) assembles the client-facing state. It projects resource declarations, control observations, and tares from the [shared core](CORE.md), command history and connection health through the QLCP adapter, and recording status from the session runtime. Every event, whichever of those produced it, is versioned and published by `SystemState` itself; runtimes do not publish events of their own. Telemetry readings flow separately; the state snapshot is not a sensor-history store.
 
 [StateStream](../src/vector/runtime/state_stream.py) queues a snapshot before registering a new subscriber, then queues subsequent deltas in order. Losing a delta could leave a client permanently stale, so a full queue disconnects the client. There is no event replay on reconnect: the client should replace its view from the new snapshot. `GET /v1/state` provides the same state as a one-off read.
 
-Events carry `state_version`, but it is not a revision of every value in the snapshot. Heartbeat, synchronization, and pending-command fields are sampled from live objects. Clients should process the events they receive rather than treating an unchanged version as proof that nothing changed.
+Events carry `state_version`, but it is not a revision of every value in the snapshot. Heartbeat, synchronization, and pending-command fields are sampled from live objects. Clients should process the events they receive rather than treating an unchanged version as proof that nothing changed. A device's `heartbeat.state` is `ok`, `missed`, `disconnected`, or `unknown`. `unknown` means the source has no transport liveness signal, so clients must not display it as healthy.
+
+Key sources by `(source_provider, source_key)`, not by the display label: different providers can use the same name. Device snapshots, their events, and telemetry batches carry those fields alongside `connection_key`. Use the connection key to reject feedback from a replaced connection, and a control's `id` to distinguish repeated control names within it. Existing `name`/`device_name` fields remain display labels; clients that key solely by name need to adopt the identity fields to show colliding labels separately.
 
 ## Command results and control state
 
 There are several distinct observations along a command's path:
 
-- The REST result (`sent`, `partial`, or an error) describes transmission to the selected nodes. It does not wait for a device response or return the tracker command IDs.
+- The `/v1/control` result describes transmission to its single target and returns the tracker command ID. It does not wait for a device response.
 - A `command.acked` event means the tracked response arrived. For CONTROL, this is normally a correlated QLCP STATUS packet, even though the lifecycle name says `acked`.
 - `reported_state` and `reported_status` describe the node's report. `pending` means the node reports ongoing actuation; `error` preserves the last known value while reporting the fault.
 
 The `settled` field is derived from the absence of an outstanding CONTROL and a reported status other than `pending`. It can therefore be true for an error or an unknown state; it is not independent proof that the requested physical state was achieved. Read the reported status too.
 
-The state model also exposes `accepted_state` and `control.accepted` for an explicit CONTROL ACK path. QLCP v3.1's normal CONTROL response is STATUS, so clients should not require a separate accepted event before handling reported state. See [Control Nodes](NODES.md) for matching and timeouts.
+Control state comes only from the node's report. A QLCP ACK of a CONTROL packet completes the command but records no control state, because it says the packet arrived, not where the actuator is. Clients must not display a requested value as the control's state. See [Control Nodes](NODES.md) for matching and timeouts.
 
 ## Client capabilities and assumptions
 

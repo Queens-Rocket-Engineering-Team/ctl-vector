@@ -3,8 +3,13 @@ import asyncio
 import contextlib
 import logging
 import socket
+from typing import TYPE_CHECKING
 
 from vector.qlcp.packets import DiscoveryPacket
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine, Sequence
 
 
 logger = logging.getLogger(__name__)
@@ -18,24 +23,31 @@ _DISABLED_POLL_INTERVAL_S = 0.5
 
 
 class DiscoveryService:
-    """Owns device discovery: a periodic discovery loop and discovery requests."""
+    """Owns device discovery for every provider: a periodic loop and one-shot requests.
+
+    QLCP nodes answer a multicast request by connecting. Other providers supply
+    an async discovery callable, run as a background task on each request.
+    """
 
     def __init__(
         self,
         *,
+        providers: Sequence[Callable[[], Coroutine[None, None, None]]] = (),
         periodic_enabled: bool = True,
         periodic_interval_s: float = 30.0,
         multicast_address: str = MULTICAST_ADDRESS,
         multicast_port: int = MULTICAST_PORT,
     ) -> None:
+        self.providers = tuple(providers)
         self.periodic_enabled = periodic_enabled
         self.periodic_interval_s = periodic_interval_s
         self.multicast_address = multicast_address
         self.multicast_port = multicast_port
         self._socket: socket.socket | None = None
+        self._provider_tasks: set[asyncio.Task[None]] = set()
 
     def discover(self) -> None:
-        """Send a single discovery request to the network."""
+        """Send a QLCP discovery request and start every other provider's discovery."""
         if self._socket is None:
             self._socket = self._create_socket()
 
@@ -43,6 +55,11 @@ class DiscoveryService:
 
         packet = DiscoveryPacket.create().encode()
         self._socket.sendto(packet, (self.multicast_address, self.multicast_port))
+        for provider in self.providers:
+            # Provider discovery can take seconds; keep a reference so the task is not collected mid-run.
+            task = asyncio.get_running_loop().create_task(provider())
+            self._provider_tasks.add(task)
+            task.add_done_callback(self._provider_tasks.discard)
 
     async def run(self) -> None:
         """Periodically issue discovery requests while periodic discovery is enabled."""

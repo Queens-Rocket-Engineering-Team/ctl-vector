@@ -3,25 +3,28 @@ import asyncio
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+import pytest
+
+from vector.core import Core, SensorDefinition, TareCaptureError
 from vector.daemons.cli_terminal import handle_server_command
-from vector.runtime.command_tracker import CommandTracker
 from vector.runtime.services import RuntimeServices
-from vector.runtime.telemetry_ingest import TareCaptureError
 from vector.state.system_state import SystemState
 
 
-def _make_runtime(capture: Any = None) -> tuple[RuntimeServices, SystemState, list[dict]]:
-    """Build a runtime with a real SystemState and a telemetry_runtime whose capture is stubbed."""
-    system_state = SystemState(command_tracker=CommandTracker())
+def _make_runtime(capture: Any = None, *, core: Core | None = None) -> tuple[RuntimeServices, SystemState, list[dict]]:
+    """Build real core/state objects and stub only sample capture."""
+    if core is None:
+        core = Core()
+        core.capture_tare_offset = MagicMock(side_effect=capture)
+    system_state = SystemState(core=core)
     published: list[dict] = []
 
     runtime = MagicMock(spec=RuntimeServices)
+    runtime.core = core
     runtime.system_state = system_state
     runtime.state_stream = MagicMock()
     runtime.state_stream.publish.side_effect = published.append
-    runtime.telemetry_runtime = MagicMock()
-    if capture is not None:
-        runtime.telemetry_runtime.capture_tare_offset.side_effect = capture
+    system_state.set_publisher(published.append)
     return cast("RuntimeServices", runtime), system_state, published
 
 
@@ -34,7 +37,7 @@ def test_tare_captures_an_offset_and_publishes_it() -> None:
 
     _run(runtime, "PT101")
 
-    assert system_state.tare_for("PT101") == 15.0
+    assert system_state.core.tares().get("PT101", 0.0) == 15.0
     assert published == [{"type": "tare.updated", "state_version": 1, "sensor_name": "PT101", "offset": 15.0}]
 
 
@@ -43,17 +46,17 @@ def test_tare_passes_an_explicit_sample_count() -> None:
 
     _run(runtime, "PT101", "200")
 
-    runtime.telemetry_runtime.capture_tare_offset.assert_called_once_with("PT101", samples=200)
+    runtime.core.capture_tare_offset.assert_called_once_with("PT101", samples=200)
 
 
 def test_tare_clear_removes_the_offset() -> None:
     runtime, system_state, published = _make_runtime()
-    system_state.set_tare("PT101", 15.0)
+    system_state.core.set_tare("PT101", 15.0)
     published.clear()
 
     _run(runtime, "PT101", "clear")
 
-    assert system_state.tare_for("PT101") == 0.0
+    assert system_state.core.tares().get("PT101", 0.0) == 0.0
     assert published == [{"type": "tare.cleared", "state_version": 2, "sensor_name": "PT101"}]
 
 
@@ -73,8 +76,43 @@ def test_tare_capture_failure_leaves_state_untouched() -> None:
 
     _run(runtime, "PT101")
 
-    assert system_state.tare_for("PT101") == 0.0
+    assert system_state.core.tares().get("PT101", 0.0) == 0.0
     assert published == []
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        pytest.param((float("nan"),), id="nan"),
+        pytest.param((float("inf"),), id="positive-infinity"),
+        pytest.param((float("-inf"),), id="negative-infinity"),
+        pytest.param((1e308, 1e308), id="sum-overflow"),
+    ],
+)
+def test_tare_rejects_non_finite_capture_and_accepts_next_valid_command(values: tuple[float, ...]) -> None:
+    core = Core()
+    source = core.register_source("test", "PANDA", sensors=[SensorDefinition("PT101")])
+    runtime, system_state, published = _make_runtime(core=core)
+    core.set_tare("PT101", 15.0)
+    published.clear()
+    version = system_state.state_version
+    for value in values:
+        source.publish_samples([("PT101", value)], timestamp_s=1.0)
+
+    async def run() -> None:
+        await handle_server_command(runtime, "TARE", ["PT101"])
+
+        assert core.tares().get("PT101", 0.0) == 15.0
+        assert system_state.state_version == version
+        assert published == []
+
+        source.publish_samples([("PT101", 9.0)], timestamp_s=2.0)
+        await handle_server_command(runtime, "TARE", ["PT101", "1"])
+
+    asyncio.run(run())
+
+    assert core.tares().get("PT101", 0.0) == 9.0
+    assert published == [{"type": "tare.updated", "state_version": version + 1, "sensor_name": "PT101", "offset": 9.0}]
 
 
 def test_tare_rejects_a_non_numeric_sample_count() -> None:
@@ -82,7 +120,7 @@ def test_tare_rejects_a_non_numeric_sample_count() -> None:
 
     _run(runtime, "PT101", "lots")
 
-    runtime.telemetry_runtime.capture_tare_offset.assert_not_called()
+    runtime.core.capture_tare_offset.assert_not_called()
     assert published == []
 
 
@@ -91,13 +129,13 @@ def test_tare_rejects_a_sample_count_larger_than_the_buffer() -> None:
 
     _run(runtime, "PT101", "9999")
 
-    runtime.telemetry_runtime.capture_tare_offset.assert_not_called()
+    runtime.core.capture_tare_offset.assert_not_called()
     assert published == []
 
 
 def test_bare_tare_lists_applied_offsets_without_changing_state() -> None:
     runtime, system_state, published = _make_runtime()
-    system_state.set_tare("PT101", 15.0)
+    system_state.core.set_tare("PT101", 15.0)
     published.clear()
 
     _run(runtime)

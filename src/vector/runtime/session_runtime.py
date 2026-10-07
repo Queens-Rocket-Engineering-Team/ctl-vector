@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     from vector.runtime.camera_runtime import CameraRuntime
     from vector.runtime.recording_paths import RecordingPaths
     from vector.runtime.session_telemetry import TelemetrySessionPublisher
-    from vector.runtime.state_stream import StateStream
     from vector.state.system_state import SystemState
 
 
@@ -76,7 +75,6 @@ class _ActiveSession:
     started_monotonic: float
     writer: SessionTelemetryWriter
     devices: list[dict[str, Any]]
-    kasa: list[dict[str, Any]]
     tares_at_start: dict[str, float]
     components: dict[str, dict[str, Any]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
@@ -97,7 +95,6 @@ class SessionRuntime:
         paths: RecordingPaths,
         telemetry_publisher: TelemetrySessionPublisher,
         system_state: SystemState,
-        state_stream: StateStream,
         camera_runtime: CameraRuntime,
         audio_runtime: AudioRuntime,
         shutdown_timeout_s: float = SHUTDOWN_FINALIZE_TIMEOUT_S,
@@ -106,7 +103,6 @@ class SessionRuntime:
         self._shutdown_timeout_s = shutdown_timeout_s
         self._publisher = telemetry_publisher
         self._system_state = system_state
-        self._state_stream = state_stream
         self._camera_runtime = camera_runtime
         self._audio_runtime = audio_runtime
         self._lock = asyncio.Lock()
@@ -134,20 +130,18 @@ class SessionRuntime:
 
             self._session = session
             try:
-                self._emit(
-                    self._system_state.start_session(
-                        session_id=session.session_id,
-                        name=session.name,
-                        started_unix=session.started_unix,
-                        started_monotonic=session.started_monotonic,
-                    ),
+                self._system_state.start_session(
+                    session_id=session.session_id,
+                    name=session.name,
+                    started_unix=session.started_unix,
+                    started_monotonic=session.started_monotonic,
                 )
                 self._write_metadata(session, status="active")
                 self._flush_task = asyncio.get_running_loop().create_task(self._flush_loop())
 
                 await self._start_components(session)
                 self._write_metadata(session, status="active")
-                self._emit(self._system_state.update_session_components({key: value["status"] for key, value in session.components.items()}))
+                self._system_state.update_session_components({key: value["status"] for key, value in session.components.items()})
             except BaseException:
                 # BaseException, not Exception: a client that disconnects mid-start
                 # cancels this task, and a session left half-started would refuse both
@@ -206,7 +200,7 @@ class SessionRuntime:
         if self._system_state.session() is None:
             return
         with contextlib.suppress(Exception):
-            self._emit(self._system_state.stop_session(stopped_unix=time.time(), end_reason=end_reason))
+            self._system_state.stop_session(stopped_unix=time.time(), end_reason=end_reason)
 
     async def finalize_on_shutdown(self) -> None:
         """Close out an in-progress session during server shutdown, best effort."""
@@ -331,7 +325,6 @@ class SessionRuntime:
             started_monotonic=started_monotonic,
             writer=writer,
             devices=snapshot["devices"],
-            kasa=snapshot["kasa"],
             tares_at_start=snapshot["tares"],
             components={"telemetry": ComponentResult("ok").as_dict()},
         )
@@ -406,7 +399,7 @@ class SessionRuntime:
         stopped_unix = time.time()
         metadata = self._metadata(session, status="completed", end_reason=end_reason, stopped_unix=stopped_unix, stopped_monotonic=time.monotonic())
         self._write_json(session.directory / SESSION_METADATA_FILENAME, metadata)
-        self._emit(self._system_state.stop_session(stopped_unix=stopped_unix, end_reason=end_reason))
+        self._system_state.stop_session(stopped_unix=stopped_unix, end_reason=end_reason)
         return metadata
 
     async def _flush_loop(self) -> None:
@@ -450,8 +443,7 @@ class SessionRuntime:
             },
             "components": session.components,
             "devices": session.devices,
-            "kasa": session.kasa,
-            "tares": {"at_start": session.tares_at_start, "at_stop": self._system_state.tares()},
+            "tares": {"at_start": session.tares_at_start, "at_stop": self._system_state.core.tares()},
             "cameras": [
                 {
                     "ip": camera.address,
@@ -468,14 +460,21 @@ class SessionRuntime:
                 "late_files": list(writer.late_files),
                 "semantics": {
                     "device_timestamp": "batch timestamp in seconds on the server monotonic timebase",
-                    "source": "name of the device the row came from",
+                    "source": "display label of the source the row came from; labels may repeat or change",
+                    "source_provider": "provider namespace; combine with source_key to identify the source",
+                    "source_key": "stable key within the provider; retained across reconnects and label changes",
                     "sensor_columns": "'<NAME> [<unit>]', tared value to 4 decimals; an empty cell means the sensor was absent from that batch",
-                    "control_columns": "'<group>_<NAME>' using the group declared in the device's QLCP config",
-                    "valve_controls": "1 when the reported state is OPEN, else 0",
-                    "other_boolean_controls": "1 when the reported state is CLOSED, else 0 -- inverted vs valves (normally-closed wiring)",
+                    "control_columns": (
+                        "'<source>_<group>_<NAME>': the source label with non-alphanumerics replaced by '_' (suffixed if two "
+                        "sources share a label), then the group declared in the device's config; no group gives '<source>_<NAME>'"
+                    ),
+                    "relay_controls": "1 when the reported state is CLOSED, else 0 (normally-closed wiring: CLOSED is energized)",
+                    "other_boolean_controls": "1 when the reported state is OPEN/true, else 0",
                     "analog_controls": "the reported setpoint to 4 decimals; an empty cell means it has not been reported",
-                    "kasa_columns": "1 when the outlet is powered; the key is the alias (or host) with non-alphanumerics replaced by '_'",
-                    "column_order": "device_timestamp, source, then sensors / controls / kasa, each block sorted alphabetically by raw name",
+                    "column_order": (
+                        "device_timestamp, source, then sensors sorted by name, then controls sorted by source, group, and name; "
+                        "source_provider and source_key are last"
+                    ),
                 },
             },
             "paths": {"root": str(self._paths.root), "mediamtx_container_root": str(self._paths.container_root)},
@@ -517,9 +516,6 @@ class SessionRuntime:
         summary["status"] = metadata.get("status", "unknown")
         summary["started_unix"] = metadata.get("clock", {}).get("started_unix")
         return summary
-
-    def _emit(self, event: dict[str, object] | None) -> None:
-        self._state_stream.publish(event)
 
 
 def _files_in(directory: Path) -> list[Path]:

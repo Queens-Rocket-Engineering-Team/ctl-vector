@@ -15,12 +15,14 @@ import contextlib
 import socket
 from typing import TYPE_CHECKING, Any
 
+from tests.mock_device import MockSensorDevice
+from vector.core import Core, TelemetryBatch
 from vector.qlcp.enums import ControlState, PacketType
 from vector.runtime.command_tracker import CommandLifecycle, CommandTracker
 from vector.runtime.esp_connection_runtime import ESPConnectionRuntime, ESPDeviceSession
-from vector.runtime.telemetry_ingest import TelemetryBatch, TelemetryRuntime
+from vector.runtime.qlcp_state import StreamSetting
+from vector.runtime.telemetry_ingest import TelemetryRuntime
 from vector.state.system_state import SystemState
-from tests.mock_device import MockSensorDevice
 
 
 if TYPE_CHECKING:
@@ -80,16 +82,17 @@ async def _runtime_harness() -> AsyncGenerator[
     udp_port = _free_udp_port()
 
     tracker = CommandTracker()
-    state = SystemState(command_tracker=tracker)
+    state = SystemState(core=Core())
     stream = _FakeStateStream()
+    state.set_publisher(stream.publish)
     runtime = ESPConnectionRuntime(
         command_tracker=tracker,
         system_state=state,
-        state_stream=stream,
     )
 
     publisher = _CollectingPublisher()
-    telemetry_runtime = TelemetryRuntime(runtime.get_device_by_address, publisher, tare_for=state.tare_for)
+    telemetry_runtime = TelemetryRuntime(runtime.get_device_by_address)
+    state.core.subscribe_samples(publisher.publish_batch)
 
     tasks = [
         asyncio.create_task(runtime.run_tcp_listener(port=tcp_port)),
@@ -117,6 +120,14 @@ async def _wait_for(condition: Any, *, timeout_s: float = 2.0, tick: float = 0.0
             return True
         await asyncio.sleep(tick)
     return False
+
+
+async def _set_control(runtime: ESPConnectionRuntime, session: ESPDeviceSession, name: str, value: bool) -> None:
+    """Dispatch one control through the core, as every endpoint does."""
+    assert session.core_source is not None
+    target = session.core_source.control(name)
+    assert target is not None, f"No control {name!r} on {session.name}"
+    await runtime.core.set_control(target, value)
 
 
 def _session_for(runtime: ESPConnectionRuntime, device_name: str) -> ESPDeviceSession:
@@ -180,14 +191,14 @@ def test_control_command_acked_and_state_updated() -> None:
 
             # Clear the event before sending so we can reliably await it.
             dev.control_handled.clear()
-            await runtime.set_control(session, "AV101", "CLOSED")
+            await _set_control(runtime, session, "AV101", False)
 
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
 
             assert dev.control_states.get("AV101") == "CLOSED"
 
             dev.control_handled.clear()
-            await runtime.set_control(session, "SAFE24", "CLOSED")
+            await _set_control(runtime, session, "SAFE24", False)
 
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
 
@@ -220,11 +231,11 @@ def test_control_command_closed() -> None:
             session = _session_for(runtime, dev.device_name)
 
             dev.control_handled.clear()
-            await runtime.set_control(session, "AV101", "OPEN")
+            await _set_control(runtime, session, "AV101", True)
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
 
             dev.control_handled.clear()
-            await runtime.set_control(session, "AV101", "CLOSED")
+            await _set_control(runtime, session, "AV101", False)
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
 
             assert dev.control_states.get("AV101") == "CLOSED"
@@ -249,7 +260,7 @@ def test_telemetry_stream_readings_match_config() -> None:
 
             # Start streaming at 20 Hz for fast batch accumulation.
             dev.stream_started.clear()
-            await runtime.start_streaming(session, frequency_hz=20)
+            await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=20))
             await asyncio.wait_for(dev.stream_started.wait(), timeout=2.0)
 
             # Wait for at least 3 batches.
@@ -266,13 +277,30 @@ def test_telemetry_stream_readings_match_config() -> None:
                 sensor = config_sensors.get(reading.sensor_id)
                 assert sensor is not None, f"Unknown sensor_id {reading.sensor_id} in batch"
                 assert reading.sensor_name == sensor.name, f"sensor_id {reading.sensor_id}: name {reading.sensor_name!r} != config {sensor.name!r}"
-                assert reading.unit_name == sensor.unit, f"sensor {sensor.name}: unit {reading.unit_name!r} != config {sensor.unit!r}"
+                assert reading.unit == sensor.unit, f"sensor {sensor.name}: unit {reading.unit!r} != config {sensor.unit!r}"
 
             # Stop streaming and confirm the mock acknowledges it.
             dev.stream_stopped.clear()
-            await runtime.stop_streaming(session)
+            await runtime.set_stream(StreamSetting(enabled=False, frequency_hz=20))
             await asyncio.wait_for(dev.stream_stopped.wait(), timeout=2.0)
             assert not dev.streaming
+
+    asyncio.run(run())
+
+
+def test_stream_setting_reaches_a_node_that_connects_later() -> None:
+    """A node set to stream before it connects starts streaming on registration, unprompted by any client."""
+
+    async def run() -> None:
+        async with _runtime_harness() as (runtime, _tracker, _state, publisher, _telemetry_runtime, tcp_port, udp_port):
+            await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=20))
+
+            async with MockSensorDevice(server_ip="127.0.0.1", server_port=tcp_port, server_udp_port=udp_port) as dev:
+                await asyncio.wait_for(dev.stream_started.wait(), timeout=2.0)
+                assert dev.streaming
+                assert dev.stream_frequency == 20
+                reached = await _wait_for(lambda: len(publisher.batches) >= 1, timeout_s=2.0)
+                assert reached, "Expected telemetry without any client sending STREAM"
 
     asyncio.run(run())
 
@@ -327,19 +355,19 @@ def test_estop_stops_streaming_and_resets_state() -> None:
 
             # Close a valve so we can verify ESTOP resets it back to its OPEN default.
             dev.control_handled.clear()
-            await runtime.set_control(session, "AV101", "CLOSED")
+            await _set_control(runtime, session, "AV101", False)
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
             assert dev.control_states.get("AV101") == "CLOSED"
 
             # Close a relay so we can verify ESTOP resets it back to its OPEN default.
             dev.control_handled.clear()
-            await runtime.set_control(session, "SAFE24", "CLOSED")
+            await _set_control(runtime, session, "SAFE24", False)
             await asyncio.wait_for(dev.control_handled.wait(), timeout=2.0)
             assert dev.control_states.get("SAFE24") == "CLOSED"
 
             # Start streaming.
             dev.stream_started.clear()
-            await runtime.start_streaming(session, frequency_hz=10)
+            await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=10))
             await asyncio.wait_for(dev.stream_started.wait(), timeout=2.0)
             assert dev.streaming
 
@@ -415,7 +443,7 @@ def test_custom_config_sensor_ids_match_readings() -> None:
             assert len(batch.readings) == 1
             reading = batch.readings[0]
             assert reading.sensor_name == "LC101"
-            assert reading.unit_name == "N"
+            assert reading.unit == "N"
 
     asyncio.run(run())
 
@@ -428,7 +456,7 @@ def test_tare_set_mid_stream_offsets_readings_without_losing_the_raw_value() -> 
 
     async def run() -> None:
         async with (
-            _runtime_harness() as (runtime, _tracker, state, publisher, telemetry_runtime, tcp_port, udp_port),
+            _runtime_harness() as (runtime, _tracker, state, publisher, _telemetry_runtime, tcp_port, udp_port),
             MockSensorDevice(
                 server_ip="127.0.0.1",
                 server_port=tcp_port,
@@ -436,10 +464,9 @@ def test_tare_set_mid_stream_offsets_readings_without_losing_the_raw_value() -> 
             ) as dev,
         ):
             await asyncio.wait_for(dev.timesync_received.wait(), timeout=2.0)
-            session = _session_for(runtime, dev.device_name)
 
             dev.stream_started.clear()
-            await runtime.start_streaming(session, frequency_hz=20)
+            await runtime.set_stream(StreamSetting(enabled=True, frequency_hz=20))
             await asyncio.wait_for(dev.stream_started.wait(), timeout=2.0)
 
             reached = await _wait_for(lambda: len(publisher.batches) >= 3, timeout_s=2.0)
@@ -448,10 +475,10 @@ def test_tare_set_mid_stream_offsets_readings_without_losing_the_raw_value() -> 
             before = publisher.batches[-1]
             assert _reading_for(before, "PT101").tare == 0.0
 
-            offset, sampled_device, count = telemetry_runtime.capture_tare_offset("PT101", samples=1)
+            offset, sampled_device, count = state.core.capture_tare_offset("PT101", samples=1)
             assert sampled_device == dev.device_name
             assert count == 1
-            state.set_tare("PT101", offset)
+            state.core.set_tare("PT101", offset)
 
             tared_at = len(publisher.batches)
             reached = await _wait_for(lambda: len(publisher.batches) > tared_at, timeout_s=2.0)
@@ -469,13 +496,13 @@ def test_tare_set_mid_stream_offsets_readings_without_losing_the_raw_value() -> 
             # Other sensors are untouched: tares are per sensor name.
             assert _reading_for(after, "TC101").tare == 0.0
 
-            state.clear_tare("PT101")
+            state.core.clear_tare("PT101")
             cleared_at = len(publisher.batches)
             reached = await _wait_for(lambda: len(publisher.batches) > cleared_at, timeout_s=2.0)
             assert reached, "No batches arrived after the tare was cleared"
             assert _reading_for(publisher.batches[cleared_at], "PT101").tare == 0.0
 
-            await runtime.stop_streaming(session)
+            await runtime.set_stream(StreamSetting(enabled=False, frequency_hz=20))
 
     asyncio.run(run())
 

@@ -1,13 +1,14 @@
 from __future__ import annotations
 import asyncio
 import contextlib
+from dataclasses import replace
 from typing import Any, cast
 
 import orjson
 from fastapi import WebSocket
 
+from vector.core import TelemetryBatch, TelemetryReading
 from vector.runtime.metrics import Metrics
-from vector.runtime.telemetry_ingest import TelemetryBatch, TelemetryReading
 from vector.runtime.telemetry_stream import TelemetryStreamRuntime
 
 
@@ -45,8 +46,10 @@ def _as_websocket(websocket: FakeWebSocket) -> WebSocket:
 
 def _make_batch() -> TelemetryBatch:
     return TelemetryBatch(
-        device_name="MockDevice",
-        device_address="10.0.0.184",
+        source_provider="qlcp",
+        source_key="MockDevice",
+        source_name="MockDevice",
+        source_address="10.0.0.184",
         connection_key="esp-1",
         timestamp_s=98269.746,
         readings=(
@@ -54,8 +57,8 @@ def _make_batch() -> TelemetryBatch:
                 sensor_id=0,
                 sensor_name="PT101",
                 value=123.4,
-                unit_name="PSI",
-                sensor_type="pressure_transducer",
+                unit="PSI",
+                group="pressure_transducer",
                 tare=6.6,
             ),
         ),
@@ -71,6 +74,8 @@ def test_serialize_batch_matches_wire_format() -> None:
 
     assert message == {
         "type": "telemetry.raw_batch",
+        "source_provider": "qlcp",
+        "source_key": "MockDevice",
         "device_name": "MockDevice",
         "device_address": "10.0.0.184",
         "connection_key": "esp-1",
@@ -97,6 +102,19 @@ def test_serialized_readings_keep_the_untared_value_recoverable() -> None:
     reading = runtime.serialize_batch(_make_batch())["readings"][0]
 
     assert abs((reading["value"] + reading["tare"]) - 130.0) < 1e-9
+
+
+def test_raw_messages_distinguish_sources_with_matching_labels_and_connections() -> None:
+    runtime = TelemetryStreamRuntime()
+    identities = [("a", "sensor"), ("b", "sensor"), ("a", "other")]
+    messages = [
+        runtime.serialize_batch(replace(_make_batch(), source_provider=provider, source_key=key))
+        for provider, key in identities
+    ]
+
+    assert [(message["source_provider"], message["source_key"]) for message in messages] == identities
+    assert {message["device_name"] for message in messages} == {"MockDevice"}
+    assert {message["connection_key"] for message in messages} == {"esp-1"}
 
 
 def test_connect_client_accepts_and_registers() -> None:
