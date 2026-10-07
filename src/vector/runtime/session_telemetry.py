@@ -41,9 +41,9 @@ logger = logging.getLogger(__name__)
 # because rows are written synchronously from the UDP ingest loop.
 WRITE_BUFFER_BYTES = 1 << 20
 
-# Controls in this group report OPEN when actuated. Everything else is treated as a
-# relay: wired normally-closed, so CLOSED is the energized state and reads as 1.
-VALVE_GROUP = "valve"
+# Relays are wired normally-closed, so CLOSED is the energized state and reads as 1.
+# Every other boolean, such as a solenoid valve or a plug, reads 1 when OPEN/true.
+RELAY_GROUP = "relay"
 SOURCE_COLUMNS = ("source_provider", "source_key")
 
 _NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
@@ -83,7 +83,7 @@ class ColumnPlan:
     """
 
     sensor_names: tuple[str, ...]
-    # (column name, control name, is_valve, is_bool), in output order.
+    # (column name, control name, is_relay, is_bool), in output order.
     controls: tuple[tuple[str, str, bool, bool], ...]
     # (column name, kasa host), in output order.
     kasa: tuple[tuple[str, str], ...]
@@ -123,7 +123,7 @@ def build_columns(schema: RecordingSchema, *, readings: Sequence[TelemetryReadin
         (
             f"{_slug(control.group)}_{control.name}",
             control.name,
-            control.group.strip().lower() == VALVE_GROUP,
+            control.group.strip().lower() == RELAY_GROUP,
             control.type == ControlType.BOOL,
         )
         # Group first, then control name, so the layout is one rule end to end.
@@ -153,7 +153,7 @@ def build_columns(schema: RecordingSchema, *, readings: Sequence[TelemetryReadin
     return ColumnPlan(sensor_names=sensor_names, controls=controls, kasa=kasa, header=header.getvalue())
 
 
-def _control_cell(state: str | None, *, is_valve: bool, is_bool: bool) -> str:
+def _control_cell(state: str | None, *, is_relay: bool, is_bool: bool) -> str:
     if not is_bool:
         # Analog control: record the setpoint, not a meaningless bit.
         if state is None:
@@ -162,9 +162,9 @@ def _control_cell(state: str | None, *, is_valve: bool, is_bool: bool) -> str:
             return f"{float(state):.4f}"
         except ValueError:
             return ""
-    if is_valve:
-        return "1" if state == "OPEN" else "0"
-    return "1" if state == "CLOSED" else "0"
+    if is_relay:
+        return "1" if state == "CLOSED" else "0"
+    return "1" if state == "OPEN" else "0"
 
 
 @dataclass(slots=True)
@@ -223,8 +223,8 @@ class SessionTelemetryWriter:
         # gap is distinguishable from a real reading of zero.
         cells += [f"{values[name]:.4f}" if name in values else "" for name in self.plan.sensor_names]
         cells += [
-            _control_cell(control_states.get(control_name), is_valve=is_valve, is_bool=is_bool)
-            for _, control_name, is_valve, is_bool in self.plan.controls
+            _control_cell(control_states.get(control_name), is_relay=is_relay, is_bool=is_bool)
+            for _, control_name, is_relay, is_bool in self.plan.controls
         ]
         cells += ["1" if kasa_active.get(host) else "0" for _, host in self.plan.kasa]
         cells += [batch.source_provider, batch.source_key]

@@ -200,18 +200,18 @@ def test_source_column_carries_the_device_name(tmp_path: Path) -> None:
     assert (tmp_path / "telemetry.csv").read_text().splitlines()[1].split(",")[1] == "Chimera"
 
 
-def test_valve_reads_one_when_open_and_relay_reads_one_when_closed(tmp_path: Path) -> None:
-    schema = _Schema(controls=(_control("AV101", "valve"), _control("SAFE24", "relay")))
-    state = _FakeState(schema, controls={"AV101": "OPEN", "SAFE24": "OPEN"})
+def test_only_relays_read_one_when_closed(tmp_path: Path) -> None:
+    schema = _Schema(controls=(_control("AV101", "solenoid"), _control("SAFE24", "relay"), _control("power", "power")))
+    state = _FakeState(schema, controls={"AV101": "OPEN", "SAFE24": "OPEN", "power": "OPEN"})
 
     _write(tmp_path, state, [_batch({})])
 
     lines = (tmp_path / "telemetry.csv").read_text().splitlines()
-    # Columns are ordered by group, so the relay comes before the valve.
-    assert lines[0] == "device_timestamp,source,relay_SAFE24,valve_AV101,source_provider,source_key"
-    # Same reported state, opposite bits: relays are wired normally-closed, so CLOSED
-    # is the energized state.
-    assert lines[1] == "236711.7952,MockDevice,0,1,test,MockDevice"
+    # Columns are ordered by group: power, relay, solenoid.
+    assert lines[0] == "device_timestamp,source,power_power,relay_SAFE24,solenoid_AV101,source_provider,source_key"
+    # Same reported state, one opposite bit: relays are wired normally-closed, so
+    # CLOSED is their energized state. Everything else reads 1 for OPEN/true.
+    assert lines[1] == "236711.7952,MockDevice,1,0,1,test,MockDevice"
 
 
 def test_relay_reads_one_when_closed(tmp_path: Path) -> None:
