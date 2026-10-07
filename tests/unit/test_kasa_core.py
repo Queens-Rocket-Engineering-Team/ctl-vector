@@ -148,15 +148,21 @@ def test_polling_reports_hand_toggles_and_closes_an_unresponsive_plug(monkeypatc
         toggled.hardware_state = True  # switched at the wall, not through VECTOR
         quiet.readback_error = KasaException("no route to host")
 
+        state.add_health_view(runtime.health)
         for _ in range(POLL_MISS_LIMIT - 1):
             await runtime.poll_once()
         quiet_source = core.source("kasa", quiet.host)
+        toggled_source = core.source("kasa", toggled.host)
         assert quiet_source is not None
+        assert toggled_source is not None
         assert quiet_source.connected
         assert state.kasa_active() == {quiet.host: False, toggled.host: True}
+        assert state.snapshot_heartbeat(quiet_source) == {"state": "missed", "consecutive_misses": POLL_MISS_LIMIT - 1}
+        assert state.snapshot_heartbeat(toggled_source) == {"state": "ok", "consecutive_misses": 0}
 
         await runtime.poll_once()
         assert not quiet_source.connected
+        assert state.snapshot_heartbeat(quiet_source)["state"] == "disconnected"
         assert [event["type"] for event in events[-2:]] == ["kasa.updated", "kasa.disconnected"]
 
     asyncio.run(run())

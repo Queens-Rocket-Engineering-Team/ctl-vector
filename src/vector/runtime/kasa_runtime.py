@@ -9,7 +9,8 @@ from functools import partial
 
 from kasa import Device, Discover, KasaException
 
-from vector.core import ControlBinding, ControlDefinition, ControlObservation, ControlStatus, ControlType, ControlValue, Core
+from vector.core import ControlBinding, ControlDefinition, ControlObservation, ControlStatus, ControlType, ControlValue, Core, Source
+from vector.state.system_state import TransportHealth
 
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,13 @@ class KasaRuntime:
     def __init__(self, *, core: Core) -> None:
         self.core = core
         self._registry: dict[str, _KasaEntry] = {}
+
+    def health(self, source: Source) -> TransportHealth | None:
+        """Liveness for one of this runtime's plugs: how many polls in a row it has missed."""
+        entry = self._registry.get(source.key)
+        if source.provider != "kasa" or entry is None or entry.power.source is not source:
+            return None
+        return TransportHealth(last_sync_time=None, consecutive_misses=entry.misses)
 
     async def run(self) -> None:
         """Poll each known plug so one that stops answering is closed; discovery registers them."""

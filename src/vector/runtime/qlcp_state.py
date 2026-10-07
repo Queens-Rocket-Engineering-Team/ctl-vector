@@ -137,7 +137,8 @@ class QLCPStateAdapter:
         self.commands = CommandProjection(tracker)
         self.stream = StreamSetting()
         self._sessions: dict[str, ESPDeviceSession] = {}
-        state.set_transport_views(commands=self.commands, health=self._health, stream=lambda: self.stream)
+        state.set_transport_views(commands=self.commands, stream=lambda: self.stream)
+        state.add_health_view(self._health)
 
     def register_device(self, device: ESPDeviceSession, *, control_handler: ControlHandler | None = None) -> None:
         # CONFIG IDs are declaration ordinals (DeviceConfig rejects anything else).

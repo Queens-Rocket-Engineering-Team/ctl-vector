@@ -155,6 +155,7 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
     )
     gui_watchdog = GUIWatchdog(state_stream=state_stream, esp_runtime=esp_runtime, metrics=metrics)
     kasa_runtime = KasaRuntime(core=core)
+    system_state.add_health_view(kasa_runtime.health)
     # One discovery request reaches every provider; the periodic loop covers plugs that reappear.
     discovery_service = DiscoveryService(providers=[kasa_runtime.discover])
     session_runtime = SessionRuntime(

@@ -86,7 +86,7 @@ def demonstrate_provider(core: Core) -> None:
 
 A real polling service keeps its source handle for its lifetime and publishes each poll through that handle. Polling, credentials, retries, and cleanup belong to the service.
 
-The core does not detect a source that goes quiet: `connected` changes only when a provider closes or replaces its registration. QLCP nodes are closed by their heartbeat loop. Kasa plugs are polled every five seconds and closed after three polls in a row go unanswered. A provider without such a loop leaves its source `connected` indefinitely, and one shown in the device list reports heartbeat `unknown`, never `ok`, because nothing has verified that it is still publishing.
+The core does not detect a source that goes quiet: `connected` changes only when a provider closes or replaces its registration. QLCP nodes are closed by their heartbeat loop. Kasa plugs are polled every five seconds and closed after three polls in a row go unanswered. Each such loop registers a health view with `SystemState`, which is what the device list's `heartbeat` reads: missed heartbeat ACKs for a node, missed polls for a plug. A provider without a loop leaves its source `connected` indefinitely and reports heartbeat `unknown`, never `ok`, because nothing has verified that it is still publishing.
 
 A tare is keyed by exact sensor name across every provider, not just QLCP nodes. A new provider that reuses a tared name inherits that offset.
 

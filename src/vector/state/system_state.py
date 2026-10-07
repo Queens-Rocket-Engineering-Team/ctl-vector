@@ -89,7 +89,8 @@ class SystemState:
         self._state_version = 0
         self._publisher: Callable[[StateEvent], None] | None = None
         self._command_view: CommandProjection | None = None
-        self._health: Callable[[Source], TransportHealth | None] = lambda _source: None
+        # One view per provider; each answers only for its own sources.
+        self._health_views: list[Callable[[Source], TransportHealth | None]] = []
         self._stream: Callable[[], StreamSetting | None] = lambda: None
         core.subscribe_changes(self._on_core_change)
 
@@ -104,12 +105,17 @@ class SystemState:
         self,
         *,
         commands: CommandProjection,
-        health: Callable[[Source], TransportHealth | None],
         stream: Callable[[], StreamSetting | None],
     ) -> None:
         self._command_view = commands
-        self._health = health
         self._stream = stream
+
+    def add_health_view(self, view: Callable[[Source], TransportHealth | None]) -> None:
+        """Register a provider's liveness view; it returns None for sources it does not own."""
+        self._health_views.append(view)
+
+    def _health(self, source: Source) -> TransportHealth | None:
+        return next((health for view in self._health_views if (health := view(source)) is not None), None)
 
     def recording_schema(self) -> RecordingSchema:
         sources = self._ordinary_sources()
@@ -246,8 +252,7 @@ class SystemState:
         if not source.connected:
             state = "disconnected"
         elif health is None:
-            # ponytail: no liveness signal for non-QLCP sources; add a per-source
-            # report interval to the core when the first polling provider lands.
+            # The provider registered no health view, so nothing has verified this source is alive.
             state = "unknown"
         else:
             state = "missed" if misses else "ok"
