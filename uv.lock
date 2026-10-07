@@ -1011,6 +1011,20 @@ wheels = [
 ]
 
 [[package]]
+name = "onvif-python"
+version = "0.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyreadline3", marker = "sys_platform == 'win32'" },
+    { name = "requests" },
+    { name = "zeep" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f4/05/bf8ddd850d0d8cac97e72b23c249304400bade6fdfae207b764549980142/onvif_python-0.4.4.tar.gz", hash = "sha256:e3ad539b1f84c7c31d173aa7167fe0c30f1290c7083fa014d04d708f7b6e30c0", size = 7365261, upload-time = "2026-10-05T10:26:37.066Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/f3/264cc7dbd739879a820f31b6abfe90775715c4c7cf9e60895342fb4bab75/onvif_python-0.4.4-py3-none-any.whl", hash = "sha256:bd00763f288483c6d1fb072436544486212a90faab70eadf37378ee90912a0c0", size = 7674867, upload-time = "2026-10-05T10:26:34.933Z" },
+]
+
+[[package]]
 name = "onvif-zeep-async"
 version = "4.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1363,6 +1377,15 @@ dependencies = [
     { name = "protobuf" },
     { name = "pycryptodome" },
     { name = "pytest" },
+]
+
+[[package]]
+name = "pyreadline3"
+version = "3.5.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/6d/f94028646d7bbe6d9d873c47ee7c246f2d29129d253f0d96cb6fcab70733/pyreadline3-3.5.6.tar.gz", hash = "sha256:61e53218b99656091ddb077df9e71f25850e72e030b6183b39c9b7e6e4f4a9bf", size = 100368, upload-time = "2026-05-14T17:55:04.471Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/5e/35c856e186b74678c24927847ad9895a51f1bc02a0c6126477a6c6040064/pyreadline3-3.5.6-py3-none-any.whl", hash = "sha256:8449b734232e42a5dcd74048e39b60db2839a4c38cf3ae2bf7707d58b5389c0d", size = 85243, upload-time = "2026-05-14T17:55:03.262Z" },
 ]
 
 [[package]]
@@ -1750,6 +1773,7 @@ dependencies = [
     { name = "colorama" },
     { name = "fastapi" },
     { name = "numpy" },
+    { name = "onvif-python" },
     { name = "onvif-zeep-async" },
     { name = "opuslib" },
     { name = "orjson" },
@@ -1777,6 +1801,7 @@ requires-dist = [
     { name = "colorama" },
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "numpy" },
+    { name = "onvif-python", specifier = ">=0.4.4" },
     { name = "onvif-zeep-async", specifier = ">=4.0.4" },
     { name = "opuslib", specifier = ">=3.0.1" },
     { name = "orjson", specifier = ">=3.11.9" },
