@@ -6,6 +6,8 @@ from pathlib import Path, PurePosixPath
 
 import aiohttp
 
+from onvif import ONVIFDiscovery
+
 from vector.config import AccountServiceConfig, CameraConfig
 from vector.drivers.camera import Camera
 from vector.integrations.mediamtx import MediaMTXClient
@@ -67,6 +69,19 @@ class CameraRuntime:
 
     def cameras(self) -> list[Camera]:
         return list(self._registry.values())
+
+    # TODO Needs testing in server
+    def discover_cameras(self) -> None:
+        cam_finder = ONVIFDiscovery(timeout=5)
+        onvif_results = cam_finder.discover(search="NetworkVideoTransmitter")
+        cameras: list[CameraConfig] = [
+            # NOTE May need to change port to 2020 manually
+            {"ip": res["host"], "onvif_port": res["port"]}
+            for res in onvif_results
+        ]
+        self._cameras=cameras
+
+
 
     async def connect_all_cameras(self) -> None:
         """Connect to all configured cameras and register them, in parallel."""

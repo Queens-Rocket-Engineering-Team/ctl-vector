@@ -44,6 +44,8 @@ class DiscoveryService:
         packet = DiscoveryPacket.create().encode()
         self._socket.sendto(packet, (self.multicast_address, self.multicast_port))
 
+        ## TODO earch for cameras 
+
     async def run(self) -> None:
         """Periodically issue discovery requests while periodic discovery is enabled."""
         while True:

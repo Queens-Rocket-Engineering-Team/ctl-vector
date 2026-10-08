@@ -2,8 +2,6 @@ import asyncio
 import logging
 import os
 
-from onvif import ONVIFDiscovery
-
 import vector
 from vector import config
 from vector.api import fast_api
@@ -17,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     """Run the server."""
-
     # -------
     # INITIALIZATION
     # -------
@@ -26,16 +23,6 @@ async def main() -> None:
     config_path = os.getenv("PROP_CONFIG", "./config.yaml")
     server_config = config.load_config(config_path)
 
-    # TODO add camera search function here.
-    # Search for cameras on network
-    discovery = ONVIFDiscovery(timeout=5)
-    onvif_results = discovery.discover(search="Tapo")
-    for res in onvif_results:
-        # TODO Check if I set port to the correct value,
-        # TODO also could be set to 2020 like in the YAML
-        cfg_item: config.CameraConfig = { "ip": res["host"], "onvif_port": res["port"]}
-        server_config["cameras"].append(cfg_item)
-    # Build the runtime object graph (pure construction; no sockets or tasks yet).
     runtime = build_runtime(server_config)
     configure_logging(runtime.log_stream)
     logger.info("Starting server (version: %s)...", vector.__version__)
