@@ -44,13 +44,11 @@ class CameraRuntime:
         self,
         mediamtx: MediaMTXClient,
         *,
-        #cameras: list[CameraConfig],
         camera_account: AccountServiceConfig,
         recording_paths: RecordingPaths,
     ) -> None:
         self._registry: dict[str, Camera] = {}
         self._mediamtx = mediamtx
-        #self._cameras = cameras
         self._camera_account = camera_account
         self._paths = recording_paths
         self._session_video_dir: PurePosixPath | None = None
@@ -80,11 +78,20 @@ class CameraRuntime:
         ]
         print(f"Found {len(cameras)}")
 
-        for cam in cameras:
-            await self.register_camera(cam.address, cam.port)
-            print(f"ip={cam.address}, port={cam.port}")
-        await asyncio.sleep(5)
+        http_client = self._get_http_session()
+        cam_username, cam_password = self._camera_credentials()
 
+        for cam in cameras:
+            camera_object = await self.register_camera(cam.address, cam.port)
+            if camera_object is None:
+                return
+            await self._configure_media_server_for_camera(
+                http_client,
+                camera_object,
+                username=cam_username,
+                password=cam_password,
+            )
+            print(f"ip={cam.address}, port={cam.port}")
 
 
 

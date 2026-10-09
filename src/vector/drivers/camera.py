@@ -33,17 +33,11 @@ class Camera:
             # Load wsdl files for ONVIF
             wsdl_path = os.path.join(os.path.dirname(onvif.__file__), 'wsdl/')
 
-            self.camera = onvif.ONVIFCamera(self.address, self.port, username, password, wsdl_path)
-            await asyncio.wait_for(self.camera.update_xaddrs(), timeout=5)
-
-
-            # ONVIF Services
-            self.devicemgmt = await self.camera.create_devicemgmt_service()
-            self.ptz = await self.camera.create_ptz_service()
-            self.media = await self.camera.create_media_service()
+            self.camera = onvif.ONVIFClient(host=self.address, port=self.port, username=username, password=password, wsdl_dir=wsdl_path)
+            # TODO Update Camera functions to utilize onvif-python
 
             # Get hostname
-            hostname = await self.devicemgmt.GetHostname()
+            hostname = self.camera.devicemgmt().GetHostname()
 
             if "Name" in hostname:
                 self.hostname = hostname["Name"]
@@ -52,27 +46,38 @@ class Camera:
 
             # Set the camera clock to current server time (UTC)
             now = datetime.now(UTC)
-            time_params = self.devicemgmt.create_type("SetSystemDateAndTime")
-            time_params.DateTimeType = "Manual"
-            time_params.DaylightSavings = False
-            time_params.TimeZone = {"TZ": "UTC0"}
-            time_params.UTCDateTime = {
+            # time_params = self.devicemgmt.create_type("SetSystemDateAndTime")
+            # time_params.DateTimeType = "Manual"
+            # time_params.DaylightSavings = False
+            # time_params.TimeZone = {"TZ": "UTC0"}
+            # time_params.UTCDateTime = {
+            #     "Date": {"Year": now.year, "Month": now.month, "Day": now.day},
+            #     "Time": {"Hour": now.hour, "Minute": now.minute, "Second": now.second},
+            # }
+            # await self.devicemgmt.SetSystemDateAndTime(time_params)
+
+            self.camera.devicemgmt().SetSystemDateAndTime(
+                DateTimeType="Manual",
+                DaylightSavings=False,
+                TimeZone={"TZ": "UTC0"},
+                UTCDateTime={
                 "Date": {"Year": now.year, "Month": now.month, "Day": now.day},
                 "Time": {"Hour": now.hour, "Minute": now.minute, "Second": now.second},
-            }
-            await self.devicemgmt.SetSystemDateAndTime(time_params)
+                },
+            )
 
             # Token (needed for PTZ and media commands)
-            self.token = (await self.media.GetProfiles())[0].token
+            self.token = (self.camera.media().GetProfiles())[0].token
         except asyncio.TimeoutError as e:
             if self.camera is not None:
-                await self.camera.close()
+                print(f"There was a timeout error when connecting to camera {self.address}.")
             raise Exception("Connection timed out") from e
         except Exception:
             if self.camera is not None:
-                await self.camera.close()
+                print(f"There was an unknown error when connecting to camera {self.address}")
             raise
 
     async def move_relative(self, x: float, y: float) -> None:
         """Move the camera by relative pan/tilt amounts."""
-        await self.ptz.RelativeMove({"ProfileToken": self.token, "Translation": {"PanTilt": {"x": x, "y": y}, "Zoom": {"x": 0}}})
+        self.camera.ptz().RelativeMove(ProfileToken=self.token, Translation={"PanTilt": {"x": x, "y": y}, "Zoom": {"x": 0}} )
+
