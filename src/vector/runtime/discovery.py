@@ -5,6 +5,7 @@ import logging
 import socket
 
 from vector.qlcp.packets import DiscoveryPacket
+from vector.runtime.camera_runtime import CameraRuntime
 
 
 logger = logging.getLogger(__name__)
@@ -27,14 +28,16 @@ class DiscoveryService:
         periodic_interval_s: float = 30.0,
         multicast_address: str = MULTICAST_ADDRESS,
         multicast_port: int = MULTICAST_PORT,
+        camera_runtime: CameraRuntime,
     ) -> None:
         self.periodic_enabled = periodic_enabled
         self.periodic_interval_s = periodic_interval_s
         self.multicast_address = multicast_address
         self.multicast_port = multicast_port
         self._socket: socket.socket | None = None
+        self.camera_runtime = camera_runtime
 
-    def discover(self) -> None:
+    async def discover(self) -> None:
         """Send a single discovery request to the network."""
         if self._socket is None:
             self._socket = self._create_socket()
@@ -43,15 +46,14 @@ class DiscoveryService:
 
         packet = DiscoveryPacket.create().encode()
         self._socket.sendto(packet, (self.multicast_address, self.multicast_port))
-
-        ## TODO earch for cameras 
+        await self.camera_runtime.discover_cameras()
 
     async def run(self) -> None:
         """Periodically issue discovery requests while periodic discovery is enabled."""
         while True:
             if self.periodic_enabled:
                 try:
-                    self.discover()
+                    await self.discover()
                 except Exception:
                     # Drop the socket so the next attempt recreates it (e.g. after a network outage).
                     logger.exception("Discovery request failed")

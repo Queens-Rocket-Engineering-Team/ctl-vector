@@ -5,7 +5,6 @@ import time
 from pathlib import Path, PurePosixPath
 
 import aiohttp
-
 from onvif import ONVIFDiscovery
 
 from vector.config import AccountServiceConfig, CameraConfig
@@ -71,35 +70,43 @@ class CameraRuntime:
         return list(self._registry.values())
 
     # TODO Needs testing in server
-    def discover_cameras(self) -> None:
+    async def discover_cameras(self) -> None:
         cam_finder = ONVIFDiscovery(timeout=5)
         onvif_results = cam_finder.discover(search="NetworkVideoTransmitter")
-        cameras: list[CameraConfig] = [
+        cameras: list[Camera] = [
             # NOTE May need to change port to 2020 manually
-            {"ip": res["host"], "onvif_port": res["port"]}
+            Camera(address=res["host"],port=res["port"])
             for res in onvif_results
         ]
-        self._cameras=cameras
+        print(f"Found {len(cameras)} cameras:\n" + f"ip: {cam.address} port: {cam.port}\n" for cam in cameras)
+        await self.connect_all_cameras(cameras=cameras)
 
 
 
-    async def connect_all_cameras(self) -> None:
+
+    async def connect_all_cameras(self, cameras: list[Camera]) -> None:
         """Connect to all configured cameras and register them, in parallel."""
         http_client = self._get_http_session()
         cam_username, cam_password = self._camera_credentials()
 
-        async def connect_one(camera: CameraConfig) -> None:
-            camera_object = await self.register_camera(camera["ip"], camera["onvif_port"])
-            if camera_object is None:
-                return
-            await self._configure_media_server_for_camera(
-                http_client,
-                camera_object,
-                username=cam_username,
-                password=cam_password,
-            )
+        # NOTE removing in favour of configuring the media stream directly
+        # async def connect_one(camera: CameraConfig) -> None:
+        #     camera_object = await self.register_camera(camera["ip"], camera["onvif_port"])
+        #     if camera_object is None:
+        #         return
+        #     await self._configure_media_server_for_camera(
+        #         http_client,
+        #         camera_object,
+        #         username=cam_username,
+        #         password=cam_password,
+        #     )
 
-        await asyncio.gather(*(connect_one(camera) for camera in self._cameras))
+        await asyncio.gather(*(self._configure_media_server_for_camera(
+            http_client=http_client,
+            camera=camera,
+            username=cam_username,
+            password=cam_password,
+        ) for camera in cameras))
 
     async def register_camera(self, ip: str, port: int) -> Camera | None:
         """Register a camera with its IP and ONVIF port."""
