@@ -44,13 +44,13 @@ class CameraRuntime:
         self,
         mediamtx: MediaMTXClient,
         *,
-        cameras: list[CameraConfig],
+        #cameras: list[CameraConfig],
         camera_account: AccountServiceConfig,
         recording_paths: RecordingPaths,
     ) -> None:
         self._registry: dict[str, Camera] = {}
         self._mediamtx = mediamtx
-        self._cameras = cameras
+        #self._cameras = cameras
         self._camera_account = camera_account
         self._paths = recording_paths
         self._session_video_dir: PurePosixPath | None = None
@@ -78,8 +78,12 @@ class CameraRuntime:
             Camera(address=res["host"],port=res["port"])
             for res in onvif_results
         ]
-        print(f"Found {len(cameras)} cameras:\n" + f"ip: {cam.address} port: {cam.port}\n" for cam in cameras)
-        await self.connect_all_cameras(cameras=cameras)
+        print(f"Found {len(cameras)}")
+
+        for cam in cameras:
+            await self.register_camera(cam.address, cam.port)
+            print(f"ip={cam.address}, port={cam.port}")
+        await asyncio.sleep(5)
 
 
 

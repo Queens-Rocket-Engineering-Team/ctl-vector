@@ -149,7 +149,7 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
     mediamtx = MediaMTXClient(config["services"]["mediamtx"])
     camera_runtime = CameraRuntime(
         mediamtx=mediamtx,
-        cameras=config["cameras"],
+        #cameras=config["cameras"],
         camera_account=config["accounts"]["camera"],
         recording_paths=recording_paths,
     )
