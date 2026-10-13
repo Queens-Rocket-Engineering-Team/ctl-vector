@@ -203,6 +203,36 @@ class SystemState:
             control=self._snapshot_control(device_state, control),
         )
 
+    def register_virtual_device(
+    self, config: DeviceConfig, *, address: str, connection_key: str, connected: bool = False
+    ) -> StateEvent:
+        """Register a device with no QLCP session behind it (sensors only, no controls)."""
+        self._devices_by_name[config.name] = _DeviceState(
+            device_name=config.name,
+            address=address,
+            connection_key=connection_key,
+            config=config,
+            connected=connected,
+            device=None,
+        )
+        return self._make_event("device.registered", device=self._snapshot_device(self._devices_by_name[config.name]))
+
+    def set_virtual_connected(self, name: str, connected: bool) -> StateEvent | None:
+        """Flip a virtual device's liveness; returns None if unknown, a real
+        device, or unchanged."""
+        ds = self._devices_by_name.get(name)
+        if ds is None or ds.device is not None or ds.connected == connected:
+            return None
+        ds.connected = connected
+        if connected:
+            return self._make_event("device.registered", device=self._snapshot_device(ds))
+        return self._make_event(
+            "device.disconnected",
+            device_name=ds.device_name,
+            device_address=ds.address,
+            connection_key=ds.connection_key,
+        )
+
     def register_kasa_device(self, host: str, alias: str, model: str, active: bool) -> StateEvent:
         """Register or update a Kasa device and return a state event."""
         self._kasa_by_host[host] = _KasaState(

@@ -6,8 +6,9 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Mapping, Protocol
 
+from vector.qlcp.config_models import DeviceConfig
 from vector.qlcp.decoding import decode_packet_server
 from vector.qlcp.packets import DataPacket
 from vector.runtime.metrics import Metrics
@@ -151,19 +152,7 @@ class TelemetryRuntime:
                     session.name,
                 )
                 continue
-
-            self._record_sample(session.name, sensor.name, reading.value, now)
-            tare = self._tare_for(sensor.name)
-            readings.append(
-                TelemetryReading(
-                    sensor_id=reading.sensor_id,
-                    sensor_name=sensor.name,
-                    value=reading.value - tare,
-                    unit_name=sensor.unit,
-                    sensor_type=sensor.group,
-                    tare=tare,
-                ),
-            )
+            readings.append(self._make_reading(session.name, sensor, reading.value, now))
 
         batch = TelemetryBatch(
             device_name=session.name,
@@ -175,6 +164,51 @@ class TelemetryRuntime:
             readings=tuple(readings),
         )
         self.metrics.record_telemetry_readings(session.name, len(batch.readings))
+        return batch
+
+    def _make_reading(self, device_name: str, sensor: SensorConfig, raw_value: float, now: float) -> TelemetryReading:
+        self._record_sample(device_name, sensor.name, raw_value, now)
+        tare = self._tare_for(sensor.name)
+        return TelemetryReading(
+            sensor_id=sensor.id,
+            sensor_name=sensor.name,
+            value=raw_value - tare,
+            unit_name=sensor.unit,
+            sensor_type=sensor.group,
+            tare=tare,
+        )
+
+    def ingest_virtual(
+        self,
+        config: DeviceConfig,
+        values: Mapping[int, float],
+        *,
+        address: str,
+        connection_key: str,
+    ) -> TelemetryBatch:
+        """Build, tare and publish a batch for a device with no QLCP session."""
+        now = time.monotonic()
+        readings: list[TelemetryReading] = []
+        for sensor_id, raw_value in values.items():
+            sensor = config.sensors_by_id.get(sensor_id)
+            if sensor is None:
+                self.metrics.record_telemetry_decode_error("unknown_sensor")
+                logger.error("Virtual device %s produced unknown sensor id %s. Ignoring.", config.name, sensor_id)
+                continue
+            readings.append(self._make_reading(config.name, sensor, raw_value, now))
+
+        batch = TelemetryBatch(
+            device_name=config.name,
+            device_address=address,
+            connection_key=connection_key,
+            timestamp_s=now,
+            timestamp_source="server_receive",
+            timestamp_synced=False,
+            readings=tuple(readings),
+        )
+        self.metrics.record_telemetry_readings(config.name, len(batch.readings))
+        for publisher in self.publishers:
+            publisher.publish_batch(batch)
         return batch
 
     def _record_sample(self, device_name: str, sensor_name: str, raw_value: float, now: float) -> None:

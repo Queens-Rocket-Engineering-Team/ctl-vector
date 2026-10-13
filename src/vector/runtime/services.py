@@ -23,6 +23,7 @@ from vector.runtime.state_stream import StateStream
 from vector.runtime.telemetry_display_stream import TelemetryDisplayStream
 from vector.runtime.telemetry_ingest import TelemetryRuntime
 from vector.runtime.telemetry_stream import TelemetryStreamRuntime
+from vector.runtime.virtualdev import VirtualDeviceService
 from vector.state import SystemState
 
 
@@ -55,6 +56,7 @@ class RuntimeServices:
     kasa_runtime: KasaRuntime
     session_runtime: SessionRuntime
     gui_watchdog: GUIWatchdog
+    virtualdev_service: VirtualDeviceService
     _tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict, init=False, repr=False)
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -86,6 +88,8 @@ class RuntimeServices:
         # Log stream daemon
         logger.info("Starting log stream daemon...")
         self._tasks["log_stream"] = loop.create_task(self.log_stream.run())
+
+        loop.create_task(self.virtualdev_service.start())
 
 
     async def stop(self) -> None:
@@ -162,6 +166,7 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
         camera_runtime=camera_runtime,
         audio_runtime=audio_runtime,
     )
+    virtualdev_service = VirtualDeviceService(system_state=system_state, state_stream=state_stream, telemetry=telemetry_runtime)
     return RuntimeServices(
         command_tracker=command_tracker,
         metrics=metrics,
@@ -178,4 +183,5 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
         kasa_runtime=kasa_runtime,
         session_runtime=session_runtime,
         gui_watchdog=gui_watchdog,
+        virtualdev_service=virtualdev_service,
     )
