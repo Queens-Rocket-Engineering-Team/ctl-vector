@@ -34,7 +34,7 @@ dev = [
 ]
 
 [tool.uv]
-reinstall-package = ["prop-teststand"]
+reinstall-package = ["vector"]
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "hatch_build.py" },

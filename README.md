@@ -129,7 +129,7 @@ For deployment, set `IMAGE_TAG` and `GUI_TAG` in `.env` to published image tags 
 docker compose -f compose.prod.yml up -d
 ```
 
-[compose.prod.yml](compose.prod.yml) currently uses the older image names `prop-teststand-server` and `prop-new-control-gui-web`, under `ghcr.io/queens-rocket-engineering-team/`. If unset, `IMAGE_TAG` defaults to `latest` and `GUI_TAG` to `v1.0.0`. MediaMTX is pinned to `1.20.0`; its [recording compatibility requirement](docs/RECORDING.md#cameras-and-mediamtx) matters when changing that version.
+If unset, `IMAGE_TAG` defaults to `latest` and `GUI_TAG` to `v1.0.0`. MediaMTX is pinned to `1.20.0`; its [recording compatibility requirement](docs/RECORDING.md#cameras-and-mediamtx) matters when changing that version.
 
 ## Using VECTOR
 

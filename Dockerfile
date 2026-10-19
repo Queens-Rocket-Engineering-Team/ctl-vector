@@ -9,7 +9,7 @@ WORKDIR /app
 
 # Cache runtime Python dependencies in the builder stage before any qlcp or app
 # source is copied. This layer only needs to rerun when pyproject.toml or
-# uv.lock changes, and it does not install prop-teststand.
+# uv.lock changes, and it does not install ctl-vector.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
@@ -23,7 +23,7 @@ COPY ctl-qlcp-lib/ ./ctl-qlcp-lib/
 RUN mkdir -p src/vector && \
     touch src/vector/__init__.py
 
-# Install prop-teststand in the builder stage. This is the only Docker build
+# Install ctl-vector in the builder stage. This is the only Docker build
 # step that intentionally runs the Hatchling protocol build hook.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
