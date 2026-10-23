@@ -1,8 +1,10 @@
 from __future__ import annotations
 import asyncio
+from pathlib import Path
 
 import pytest
 
+from tests.unit.mock_camera_runtime import make_mock_camera_runtime
 from vector.qlcp.decoding import decode_packet_client
 from vector.qlcp.enums import PacketType
 from vector.qlcp.packets import DiscoveryPacket
@@ -25,8 +27,9 @@ class _StopLoop(Exception):
     pass
 
 
-def test_default_config_is_periodic_discovery() -> None:
-    service = DiscoveryService()
+def test_default_config_is_periodic_discovery(tmp_path: Path) -> None:
+    camera_runtime = make_mock_camera_runtime(tmp_path)
+    service = DiscoveryService(camera_runtime=camera_runtime)
 
     assert service.periodic_enabled is True
     assert service.periodic_interval_s == 30.0
@@ -37,8 +40,9 @@ def test_default_config_is_periodic_discovery() -> None:
     assert service.periodic_interval_s == 5.0
 
 
-def test_discover_lazily_creates_socket_once_and_sends_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    service = DiscoveryService(multicast_address="239.100.0.1", multicast_port=10000)
+def test_discover_lazily_creates_socket_once_and_sends_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    camera_runtime = make_mock_camera_runtime(tmp_path)
+    service = DiscoveryService(multicast_address="239.100.0.1", multicast_port=10000, camera_runtime=camera_runtime)
     fake = FakeSocket()
     created = 0
 
@@ -47,23 +51,27 @@ def test_discover_lazily_creates_socket_once_and_sends_request(monkeypatch: pyte
         created += 1
         return fake
 
-    monkeypatch.setattr(service, "_create_socket", _create_socket)
+    async def run():
+        monkeypatch.setattr(service, "_create_socket", _create_socket)
 
-    service.discover()
-    service.discover()
+        await service.discover()
+        await service.discover()
 
-    assert created == 1  # socket created once and reused
-    assert len(fake.sent) == 2
-    payload, address = fake.sent[0]
-    assert address == ("239.100.0.1", 10000)
+        assert created == 1  # socket created once and reused
+        assert len(fake.sent) == 2
+        payload, address = fake.sent[0]
+        assert address == ("239.100.0.1", 10000)
 
-    packet = decode_packet_client(payload)
-    assert isinstance(packet, DiscoveryPacket)
-    assert packet.packet_type == PacketType.DISCOVERY
+        packet = decode_packet_client(payload)
+        assert isinstance(packet, DiscoveryPacket)
+        assert packet.packet_type == PacketType.DISCOVERY
+        
+    asyncio.run(run())
 
-def test_run_issues_discovery_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_issues_discovery_when_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async def run() -> None:
-        service = DiscoveryService(periodic_enabled=True, periodic_interval_s=7.0)
+        camera_runtime = make_mock_camera_runtime(tmp_path)
+        service = DiscoveryService(periodic_enabled=True, periodic_interval_s=7.0, camera_runtime=camera_runtime)
         discover_calls = 0
         sleeps: list[float] = []
 
@@ -87,9 +95,10 @@ def test_run_issues_discovery_when_enabled(monkeypatch: pytest.MonkeyPatch) -> N
     asyncio.run(run())
 
 
-def test_run_recovers_when_discover_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_recovers_when_discover_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async def run() -> None:
-        service = DiscoveryService(periodic_enabled=True, periodic_interval_s=7.0)
+        camera_runtime = make_mock_camera_runtime(tmp_path)
+        service = DiscoveryService(periodic_enabled=True, periodic_interval_s=7.0, camera_runtime=camera_runtime)
         fake = FakeSocket()
         service._socket = fake  # type: ignore[assignment]
         sleeps: list[float] = []
@@ -115,9 +124,10 @@ def test_run_recovers_when_discover_raises(monkeypatch: pytest.MonkeyPatch) -> N
     asyncio.run(run())
 
 
-def test_run_skips_discovery_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_skips_discovery_when_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path:Path) -> None:
     async def run() -> None:
-        service = DiscoveryService(periodic_enabled=False)
+        camera_runtime = make_mock_camera_runtime(tmp_path)
+        service = DiscoveryService(periodic_enabled=False, camera_runtime=camera_runtime)
         discover_calls = 0
         sleeps: list[float] = []
 

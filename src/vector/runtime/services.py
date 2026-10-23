@@ -69,15 +69,13 @@ class RuntimeServices:
         self._tasks["tcp_listener"] = loop.create_task(self.esp_runtime.run_tcp_listener())
         self._tasks["udp_listener"] = loop.create_task(self.telemetry_runtime.run_udp_listener())
         self._tasks["telemetry_display_flush"] = loop.create_task(self.telemetry_display_stream.run())
+
+        #Device discovery (Both Camera and QLCP/ESP)
         self._tasks["auto_discovery"] = loop.create_task(self.discovery_service.run())
 
         # Safety daemon: ESTOPs every node if the GUI stays away (armed from construction).
         logger.info("Starting GUI watchdog daemon...")
         self._tasks["gui_watchdog"] = loop.create_task(self.gui_watchdog.run())
-
-        # Camera discovery daemons
-        logger.info("Starting camera discovery daemon...")
-        self._tasks["camera_connector"] = loop.create_task(self.camera_runtime.connect_all_cameras())
 
         # Kasa discovery daemon
         logger.info("Starting Kasa discovery daemon...")
@@ -122,7 +120,6 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
     system_state = SystemState(command_tracker=command_tracker)
     state_stream = StateStream(system_state, metrics=metrics)
     log_stream = LogStream(metrics=metrics)
-    discovery_service = DiscoveryService()
     telemetry_stream = TelemetryStreamRuntime(metrics=metrics)
     telemetry_display_stream = TelemetryDisplayStream(metrics=metrics)
     esp_runtime = ESPConnectionRuntime(
@@ -148,10 +145,11 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
     mediamtx = MediaMTXClient(config["services"]["mediamtx"])
     camera_runtime = CameraRuntime(
         mediamtx=mediamtx,
-        cameras=config["cameras"],
+        #cameras=config["cameras"],
         camera_account=config["accounts"]["camera"],
         recording_paths=recording_paths,
     )
+    discovery_service = DiscoveryService(camera_runtime=camera_runtime)
     gui_watchdog = GUIWatchdog(state_stream=state_stream, esp_runtime=esp_runtime, metrics=metrics)
     kasa_runtime = KasaRuntime(system_state=system_state, state_stream=state_stream)
     session_runtime = SessionRuntime(

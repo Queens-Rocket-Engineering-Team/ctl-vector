@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     """Run the server."""
-
     # -------
     # INITIALIZATION
     # -------

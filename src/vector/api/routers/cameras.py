@@ -35,7 +35,7 @@ async def get_cameras(rt: Annotated[RuntimeServices, Depends(get_runtime)]) -> C
 @router.post("/v1/cameras/reconnect", summary="Reconnect all cameras")
 async def reconnect_cameras(rt: Annotated[RuntimeServices, Depends(get_runtime)]) -> CameraList:
     logger.info("User sent camera reconnect")
-    await rt.camera_runtime.connect_all_cameras()
+    await rt.camera_runtime.discover_cameras()
     return CameraList(cameras=[
         CameraInfo(ip=cam.address, hostname=cam.hostname, stream_path=cam.stream_path, recording=cam.recording)
         for cam in rt.camera_runtime.cameras()
