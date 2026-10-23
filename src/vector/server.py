@@ -23,6 +23,7 @@ async def main() -> None:
     config_path = os.getenv("PROP_CONFIG", "./config.yaml")
     server_config = config.load_config(config_path)
 
+    # Build the runtime object graph (pure construction; no sockets or tasks yet).
     runtime = build_runtime(server_config)
     configure_logging(runtime.log_stream)
     logger.info("Starting server (version: %s)...", vector.__version__)

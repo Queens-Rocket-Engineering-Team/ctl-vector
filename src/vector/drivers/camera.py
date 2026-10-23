@@ -34,7 +34,6 @@ class Camera:
             wsdl_path = os.path.join(os.path.dirname(onvif.__file__), 'wsdl/')
 
             self.camera = onvif.ONVIFClient(host=self.address, port=self.port, username=username, password=password, wsdl_dir=wsdl_path)
-            # TODO Update Camera functions to utilize onvif-python
 
             # Get hostname
             hostname = self.camera.devicemgmt().GetHostname()
@@ -46,16 +45,6 @@ class Camera:
 
             # Set the camera clock to current server time (UTC)
             now = datetime.now(UTC)
-            # time_params = self.devicemgmt.create_type("SetSystemDateAndTime")
-            # time_params.DateTimeType = "Manual"
-            # time_params.DaylightSavings = False
-            # time_params.TimeZone = {"TZ": "UTC0"}
-            # time_params.UTCDateTime = {
-            #     "Date": {"Year": now.year, "Month": now.month, "Day": now.day},
-            #     "Time": {"Hour": now.hour, "Minute": now.minute, "Second": now.second},
-            # }
-            # await self.devicemgmt.SetSystemDateAndTime(time_params)
-
             self.camera.devicemgmt().SetSystemDateAndTime(
                 DateTimeType="Manual",
                 DaylightSavings=False,

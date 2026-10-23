@@ -67,16 +67,16 @@ class CameraRuntime:
     def cameras(self) -> list[Camera]:
         return list(self._registry.values())
 
-    # TODO Needs testing in server
     async def discover_cameras(self) -> None:
+        """Use ONVIF to scan network for cameras, registers and configures media server for each camera found"""
         cam_finder = ONVIFDiscovery(timeout=5)
         onvif_results = cam_finder.discover(search="NetworkVideoTransmitter")
         cameras: list[Camera] = [
-            # NOTE May need to change port to 2020 manually
             Camera(address=res["host"],port=res["port"])
             for res in onvif_results
         ]
-        print(f"Found {len(cameras)}")
+
+        logger.info("Found %d cameras on network", len(cameras))
 
         http_client = self._get_http_session()
         cam_username, cam_password = self._camera_credentials()
@@ -91,33 +91,8 @@ class CameraRuntime:
                 username=cam_username,
                 password=cam_password,
             )
-            print(f"ip={cam.address}, port={cam.port}")
 
-
-
-    async def connect_all_cameras(self, cameras: list[Camera]) -> None:
-        """Connect to all configured cameras and register them, in parallel."""
-        http_client = self._get_http_session()
-        cam_username, cam_password = self._camera_credentials()
-
-        # NOTE removing in favour of configuring the media stream directly
-        # async def connect_one(camera: CameraConfig) -> None:
-        #     camera_object = await self.register_camera(camera["ip"], camera["onvif_port"])
-        #     if camera_object is None:
-        #         return
-        #     await self._configure_media_server_for_camera(
-        #         http_client,
-        #         camera_object,
-        #         username=cam_username,
-        #         password=cam_password,
-        #     )
-
-        await asyncio.gather(*(self._configure_media_server_for_camera(
-            http_client=http_client,
-            camera=camera,
-            username=cam_username,
-            password=cam_password,
-        ) for camera in cameras))
+            logger.info("ip=%s, port=%s", cam.address, cam.port)
 
     async def register_camera(self, ip: str, port: int) -> Camera | None:
         """Register a camera with its IP and ONVIF port."""
@@ -134,7 +109,7 @@ class CameraRuntime:
             logger.info("Connected to camera %s (%s)", camera_object.hostname, ip)
 
             self._registry[ip] = camera_object
-            return camera_object
+            return camera_object  # noqa: TRY300
         except Exception:
             logger.exception("Failed to connect to camera at %s", ip)
             return None
