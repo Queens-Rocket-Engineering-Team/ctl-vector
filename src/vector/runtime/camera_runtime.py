@@ -70,7 +70,10 @@ class CameraRuntime:
     async def discover_cameras(self) -> None:
         """Use ONVIF to scan network for cameras, registers and configures media server for each camera found"""
         cam_finder = ONVIFDiscovery(timeout=5)
-        onvif_results = cam_finder.discover(search="NetworkVideoTransmitter")
+        onvif_results = await asyncio.to_thread(
+            cam_finder.discover,
+            search="NetworkVideoTransmitter",
+        )
         cameras: list[Camera] = [
             Camera(address=res["host"],port=res["port"])
             for res in onvif_results

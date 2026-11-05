@@ -33,10 +33,12 @@ class Camera:
             # Load wsdl files for ONVIF
             wsdl_path = os.path.join(os.path.dirname(onvif.__file__), 'wsdl/')
 
-            self.camera = onvif.ONVIFClient(host=self.address, port=self.port, username=username, password=password, wsdl_dir=wsdl_path)
+            self.camera = onvif.ONVIFClient(host=self.address, port=self.port, username=username, password=password, wsdl_dir=wsdl_path, timeout=5)
 
             # Get hostname
-            hostname = await self.camera.devicemgmt().GetHostname()
+            hostname = await asyncio.to_thread(
+                lambda: self.camera.devicemgmt().GetHostname(),
+            )
 
             if "Name" in hostname:
                 self.hostname = hostname["Name"]
@@ -45,18 +47,23 @@ class Camera:
 
             # Set the camera clock to current server time (UTC)
             now = datetime.now(UTC)
-            self.camera.devicemgmt().SetSystemDateAndTime(
-                DateTimeType="Manual",
-                DaylightSavings=False,
-                TimeZone={"TZ": "UTC0"},
-                UTCDateTime={
-                "Date": {"Year": now.year, "Month": now.month, "Day": now.day},
-                "Time": {"Hour": now.hour, "Minute": now.minute, "Second": now.second},
-                },
+            await asyncio.to_thread(
+                lambda: self.camera.devicemgmt().SetSystemDateAndTime(
+                    DateTimeType="Manual",
+                    DaylightSavings=False,
+                    TimeZone={"TZ": "UTC0"},
+                    UTCDateTime={
+                        "Date": {"Year": now.year, "Month": now.month, "Day": now.day},
+                        "Time": {"Hour": now.hour, "Minute": now.minute, "Second": now.second},
+                    },
+                ),
             )
 
             # Token (needed for PTZ and media commands)
-            self.token = (self.camera.media().GetProfiles())[0].token
+            profiles = await asyncio.to_thread(
+                lambda: self.camera.media().GetProfiles(),
+            )
+            self.token = profiles[0].token
         except asyncio.TimeoutError as e:
             if self.camera is not None:
                 print(f"There was a timeout error when connecting to camera {self.address}.")
@@ -68,5 +75,9 @@ class Camera:
 
     async def move_relative(self, x: float, y: float) -> None:
         """Move the camera by relative pan/tilt amounts."""
-        self.camera.ptz().RelativeMove(ProfileToken=self.token, Translation={"PanTilt": {"x": x, "y": y}, "Zoom": {"x": 0}} )
-
+        await asyncio.to_thread(
+            lambda: self.camera.ptz().RelativeMove(
+                ProfileToken=self.token,
+                Translation={"PanTilt": {"x": x, "y": y}, "Zoom": {"x": 0}},
+            ),
+        )
