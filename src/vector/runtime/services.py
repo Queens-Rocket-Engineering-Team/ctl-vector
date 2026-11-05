@@ -70,7 +70,7 @@ class RuntimeServices:
         self._tasks["udp_listener"] = loop.create_task(self.telemetry_runtime.run_udp_listener())
         self._tasks["telemetry_display_flush"] = loop.create_task(self.telemetry_display_stream.run())
 
-        #Device discovery (Both Camera and QLCP/ESP)
+        # Device discovery (Both Camera and QLCP/ESP)
         self._tasks["auto_discovery"] = loop.create_task(self.discovery_service.run())
 
         # Safety daemon: ESTOPs every node if the GUI stays away (armed from construction).
@@ -145,7 +145,6 @@ def build_runtime(config: ServerConfig) -> RuntimeServices:
     mediamtx = MediaMTXClient(config["services"]["mediamtx"])
     camera_runtime = CameraRuntime(
         mediamtx=mediamtx,
-        #cameras=config["cameras"],
         camera_account=config["accounts"]["camera"],
         recording_paths=recording_paths,
     )

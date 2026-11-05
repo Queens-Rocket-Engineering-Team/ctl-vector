@@ -105,14 +105,13 @@ class CameraRuntime:
             # Create camera object and connect to it
             camera_object = Camera(ip, port)
             await camera_object.connect(*self._camera_credentials())
-
-            logger.info("Connected to camera %s (%s)", camera_object.hostname, ip)
-
-            self._registry[ip] = camera_object
-            return camera_object  # noqa: TRY300
         except Exception:
             logger.exception("Failed to connect to camera at %s", ip)
             return None
+        else:
+            logger.info("Connected to camera %s (%s)", camera_object.hostname, ip)
+            self._registry[ip] = camera_object
+            return camera_object
 
     async def move_camera(self, ip: str, x: float, y: float) -> None:
         """Move a camera by relative pan/tilt amounts. Errors are logged, not raised (runs as a fire-and-forget BackgroundTask)."""

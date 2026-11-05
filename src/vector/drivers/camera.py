@@ -36,7 +36,7 @@ class Camera:
             self.camera = onvif.ONVIFClient(host=self.address, port=self.port, username=username, password=password, wsdl_dir=wsdl_path)
 
             # Get hostname
-            hostname = self.camera.devicemgmt().GetHostname()
+            hostname = await self.camera.devicemgmt().GetHostname()
 
             if "Name" in hostname:
                 self.hostname = hostname["Name"]
