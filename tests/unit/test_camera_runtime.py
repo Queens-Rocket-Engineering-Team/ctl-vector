@@ -23,7 +23,7 @@ class _FakeCamera:
 def _runtime(tmp_path: Path) -> CameraRuntime:
     return CameraRuntime(
         cast("Any", None),
-        cameras=[],
+        
         camera_account={"username": "user", "password": "pass"},
         recording_paths=RecordingPaths.from_config({"root": str(tmp_path), "mediamtx_container_root": "/recordings"}),
     )

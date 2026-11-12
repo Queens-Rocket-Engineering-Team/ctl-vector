@@ -5,6 +5,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 import aiohttp
+from onvif import ONVIFDiscovery
 
 from vector.config import AccountServiceConfig, CameraConfig
 from vector.drivers.camera import Camera
@@ -43,13 +44,11 @@ class CameraRuntime:
         self,
         mediamtx: MediaMTXClient,
         *,
-        cameras: list[CameraConfig],
         camera_account: AccountServiceConfig,
         recording_paths: RecordingPaths,
     ) -> None:
         self._registry: dict[str, Camera] = {}
         self._mediamtx = mediamtx
-        self._cameras = cameras
         self._camera_account = camera_account
         self._paths = recording_paths
         self._session_video_dir: PurePosixPath | None = None
@@ -68,13 +67,25 @@ class CameraRuntime:
     def cameras(self) -> list[Camera]:
         return list(self._registry.values())
 
-    async def connect_all_cameras(self) -> None:
-        """Connect to all configured cameras and register them, in parallel."""
+    async def discover_cameras(self) -> None:
+        """Use ONVIF to scan network for cameras, registers and configures media server for each camera found"""
+        cam_finder = ONVIFDiscovery(timeout=5)
+        onvif_results = await asyncio.to_thread(
+            cam_finder.discover,
+            search="NetworkVideoTransmitter",
+        )
+        cameras: list[Camera] = [
+            Camera(address=res["host"],port=res["port"])
+            for res in onvif_results
+        ]
+
+        logger.info("Found %d cameras on network", len(cameras))
+
         http_client = self._get_http_session()
         cam_username, cam_password = self._camera_credentials()
 
-        async def connect_one(camera: CameraConfig) -> None:
-            camera_object = await self.register_camera(camera["ip"], camera["onvif_port"])
+        for cam in cameras:
+            camera_object = await self.register_camera(cam.address, cam.port)
             if camera_object is None:
                 return
             await self._configure_media_server_for_camera(
@@ -84,7 +95,7 @@ class CameraRuntime:
                 password=cam_password,
             )
 
-        await asyncio.gather(*(connect_one(camera) for camera in self._cameras))
+            logger.info("ip=%s, port=%s", cam.address, cam.port)
 
     async def register_camera(self, ip: str, port: int) -> Camera | None:
         """Register a camera with its IP and ONVIF port."""
@@ -97,14 +108,13 @@ class CameraRuntime:
             # Create camera object and connect to it
             camera_object = Camera(ip, port)
             await camera_object.connect(*self._camera_credentials())
-
-            logger.info("Connected to camera %s (%s)", camera_object.hostname, ip)
-
-            self._registry[ip] = camera_object
-            return camera_object
         except Exception:
             logger.exception("Failed to connect to camera at %s", ip)
             return None
+        else:
+            logger.info("Connected to camera %s (%s)", camera_object.hostname, ip)
+            self._registry[ip] = camera_object
+            return camera_object
 
     async def move_camera(self, ip: str, x: float, y: float) -> None:
         """Move a camera by relative pan/tilt amounts. Errors are logged, not raised (runs as a fire-and-forget BackgroundTask)."""

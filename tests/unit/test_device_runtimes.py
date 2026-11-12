@@ -64,7 +64,6 @@ def _make_camera_runtime(tmp_path: Path) -> CameraRuntime:
     mediamtx = MagicMock()
     return CameraRuntime(
         mediamtx,
-        cameras=[],
         camera_account={"username": "user", "password": "pass"},
         recording_paths=RecordingPaths.from_config({"root": str(tmp_path), "mediamtx_container_root": "/recordings"}),
     )
