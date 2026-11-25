@@ -1,9 +1,11 @@
 import asyncio
 import os
+import logging
 from datetime import UTC, datetime
 
 import onvif
 
+logger = logging.getLogger(__name__)
 
 class Camera:
     """ONVIF connection and low-level services for a single camera device."""
@@ -66,11 +68,11 @@ class Camera:
             self.token = profiles[0].token
         except asyncio.TimeoutError as e:
             if self.camera is not None:
-                print(f"There was a timeout error when connecting to camera {self.address}.")
+                logger.info("There was a timeout error when connecting to camera" + self.address + ".")
             raise Exception("Connection timed out") from e
         except Exception:
             if self.camera is not None:
-                print(f"There was an unknown error when connecting to camera {self.address}")
+                logger.info("There was an unknown error when connecting to camera " + self.address + ".")
             raise
 
     async def move_relative(self, x: float, y: float) -> None:
