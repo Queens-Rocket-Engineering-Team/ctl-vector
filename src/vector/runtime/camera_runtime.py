@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 import aiohttp
 from onvif import ONVIFDiscovery
 
-from vector.config import AccountServiceConfig, CameraConfig
+from vector.config import AccountServiceConfig
 from vector.drivers.camera import Camera
 from vector.integrations.mediamtx import MediaMTXClient
 from vector.runtime.recording_paths import RecordingPaths
@@ -68,7 +68,7 @@ class CameraRuntime:
         return list(self._registry.values())
 
     async def discover_cameras(self) -> None:
-        """Use ONVIF to scan network for cameras, registers and configures media server for each camera found"""
+        """Use ONVIF to scan network for cameras, registers and configures media server for each camera found."""
         cam_finder = ONVIFDiscovery(timeout=5)
         onvif_results = await asyncio.to_thread(
             cam_finder.discover,

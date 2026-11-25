@@ -1,9 +1,10 @@
 import asyncio
-import os
 import logging
+import os
 from datetime import UTC, datetime
 
 import onvif
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class Camera:
     async def connect(self, username: str, password: str) -> None:
         try:
             # Load wsdl files for ONVIF
-            wsdl_path = os.path.join(os.path.dirname(onvif.__file__), 'wsdl/')
+            wsdl_path = os.path.join(os.path.dirname(onvif.__file__), "wsdl/")
 
             self.camera = onvif.ONVIFClient(host=self.address, port=self.port, username=username, password=password, wsdl_dir=wsdl_path, timeout=5)
 
@@ -66,13 +67,13 @@ class Camera:
                 lambda: self.camera.media().GetProfiles(),
             )
             self.token = profiles[0].token
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             if self.camera is not None:
-                logger.info("There was a timeout error when connecting to camera" + self.address + ".")
-            raise Exception("Connection timed out") from e
+                logger.info(format("There was a timeout error when connecting to camera %s.", self.address))
+            raise TimeoutError("Connection timed out") from e
         except Exception:
             if self.camera is not None:
-                logger.info("There was an unknown error when connecting to camera " + self.address + ".")
+                logger.info(format("There was an unknown error when connecting to camera %s.", self.address))
             raise
 
     async def move_relative(self, x: float, y: float) -> None:
